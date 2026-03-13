@@ -59,9 +59,11 @@ typedef enum {
 static volatile usart6_state_t rx_state = USART6_IDLE;
 
 // ── usart6_rx_irq — call from USART6_IRQHandler ───────────────────────────────
+static BQUEUE(100, cliq);
 
 void usart6_rx_irq(void) {
-    if (!LL_USART_IsActiveFlag_RXNE(USART6)) return;   // spurious interrupt
+    pushbq(LL_USART_ReceiveData8(USART6), cliq);
+    // if (!LL_USART_IsActiveFlag_RXNE(USART6)) return;   // spurious interrupt
 
     switch (rx_state) {
         case USART6_IDLE:
@@ -87,10 +89,11 @@ static void usart6_rx_action(void) {
     autoEchoOn();       // RS232 terminal expects device-side echo
 
     // Drain all bytes currently waiting in the USART6 RX register.
-    while (LL_USART_IsActiveFlag_RXNE(USART6)) {
-        char c = (char)LL_USART_ReceiveData8(USART6);
-        keyIn(c);
-    }
+    // while (LL_USART_IsActiveFlag_RXNE(USART6)) {
+    //     char c = (char)LL_USART_ReceiveData8(USART6);
+    //     keyIn(c);
+    // }
+    while (qbq(cliq))  keyIn(pullbq(cliq));
 
     switch (rx_state) {
         case USART6_REQUEUE:
