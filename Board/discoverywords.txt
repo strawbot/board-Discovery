@@ -1,0 +1,26 @@
+// Discovery board CLI bindings
+// Run as prebuild step: python parsewords.py <path>/discoverywords.txt
+// Generates: help.c  wordlist.c  wordlist.txt
+// Include clibindings.txt and floatwords.txt for full CLI support.
+
+Constants
+	gnetif			gnetif			// ( - a ) LwIP netif structure for Ethernet
+End
+
+Words // network
+	show-eth		show_ethernet	// show Ethernet link status, speed, duplex and PHY info
+	show-ip			show_ip			// show IP address, gateway, netmask and DHCP state
+	show-net		show_net		// show LwIP network statistics: RX/TX counts, errors
+	show-http		show_http		// show HTTP server state and active connections
+	show-telnet		show_telnet		// show Telnet server state and active connections
+End
+
+Words // usb
+	show-usb		show_usb		// show USB connection state and CDC line status
+End
+
+Words // system
+	show-sys		show_sys		// show system info: clock frequencies and uptime
+	show-timer		show_timer		// show delta timer state and UTC tick counter
+	reboot			do_reboot		// reboot the device via NVIC system reset
+End

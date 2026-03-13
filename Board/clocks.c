@@ -30,6 +30,22 @@ void show_timer() {
 
 void micro_sleep() { __WFI(); }
 
+#define set_pin(pin) LL_GPIO_SetOutputPin(pin##_GPIO_Port, pin##_Pin)
+#define reset_pin(pin) LL_GPIO_ResetOutputPin(pin##_GPIO_Port, pin##_Pin)
+
+static void blink_leds() {
+	static enum {OFF, GREEN, ORANGE, RED, BLUE} color = OFF;
+	switch (color) {
+	case OFF:    set_pin(LD4);                 color = GREEN; break;
+	case GREEN:  set_pin(LD3); reset_pin(LD4); color = ORANGE; break;
+	case ORANGE: set_pin(LD5); reset_pin(LD3); color = RED; break;
+	case RED:    set_pin(LD6); reset_pin(LD5); color = BLUE; break;
+	case BLUE:                 reset_pin(LD6); color = OFF; break;
+	}
+	// after(secs(1), blink_leds);
+	later(blink_leds);
+} // LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
+
 // compare times over an interval: sysTicks();
 void init_clocks() {
 	// start a 32 bit counter based on processor frequency
@@ -43,4 +59,6 @@ void init_clocks() {
 	never(alarmEvent);
 	LL_TIM_SetOnePulseMode(TIM2, LL_TIM_ONEPULSEMODE_SINGLE);
 	LL_TIM_EnableIT_UPDATE(TIM2);
+	later(blink_leds);
+	namedAction(blink_leds);
 }

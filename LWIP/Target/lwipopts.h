@@ -51,8 +51,6 @@
 #define LWIP_DHCP 1
 /*----- Value in opt.h for NO_SYS: 0 -----*/
 #define NO_SYS 1
-/*----- Default Value for LWIP_TIMERS: 1 ---*/
-#define LWIP_TIMERS 0
 /*----- Value in opt.h for SYS_LIGHTWEIGHT_PROT: 1 -----*/
 #define SYS_LIGHTWEIGHT_PROT 0
 /*----- Default Value for MEMP_MEM_INIT: 0 ---*/
@@ -85,10 +83,6 @@
 #define LWIP_SOCKET 0
 /*----- Value in opt.h for RECV_BUFSIZE_DEFAULT: INT_MAX -----*/
 #define RECV_BUFSIZE_DEFAULT 2000000000
-/*----- Default Value for LWIP_HTTPD: 0 ---*/
-#define LWIP_HTTPD 1
-/*----- Default Value for HTTPD_USE_MEM_POOL: 0 ---*/
-#define HTTPD_USE_MEM_POOL 1
 /*----- Value in opt.h for LWIP_STATS: 1 -----*/
 #define LWIP_STATS 0
 /*----- Value in opt.h for CHECKSUM_GEN_IP: 1 -----*/

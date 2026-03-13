@@ -20,11 +20,12 @@
 #include "main.h"
 #include "lwip.h"
 #include "tim.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "cli_transport_usart6.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -90,7 +91,9 @@ int main(void)
   MX_GPIO_Init();
   MX_LWIP_Init();
   MX_TIM2_Init();
+  MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
+  usart6_transport_init();
 void init_tea();
   init_tea();
   /* USER CODE END 2 */
@@ -100,7 +103,8 @@ void init_tea();
   while (1)
   {
     /* USER CODE END WHILE */
-
+    void run();
+    run();
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */

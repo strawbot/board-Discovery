@@ -103,10 +103,10 @@ struct sys_timeo {
 void sys_timeouts_init(void);
 
 #if LWIP_DEBUG_TIMERNAMES
-void sys_timeout_debug(u32_t msecs, sys_timeout_handler handler, void *arg, const char* handler_name); lolo
+void sys_timeout_debug(u32_t msecs, sys_timeout_handler handler, void *arg, const char* handler_name);
 #define sys_timeout(msecs, handler, arg) sys_timeout_debug(msecs, handler, arg, #handler)
 #else /* LWIP_DEBUG_TIMERNAMES */
-void sys_timeout(u32_t msecs, sys_timeout_handler handler, void *arg); blahblah
+void sys_timeout(u32_t msecs, sys_timeout_handler handler, void *arg);
 #endif /* LWIP_DEBUG_TIMERNAMES */
 
 void sys_untimeout(sys_timeout_handler handler, void *arg);
