@@ -24,3 +24,6 @@ Words // system
 	show-timer		show_timer		// show delta timer state and UTC tick counter
 	reboot			do_reboot		// reboot the device via NVIC system reset
 End
+
+Include ../../TimbreOS/WordLists/clibindings.txt
+Include ../../TimbreOS/WordLists/floatwords.txt

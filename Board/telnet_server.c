@@ -47,7 +47,7 @@ static const uint8_t telnet_greeting[] = {
     IAC, DO,   OPT_SGA,     // please suppress go-ahead your side too
 };
 
-static const char prompt[] = "\r\nTimbreOS> ";
+static const char prompt[] = "\nTimbreOS: \n";
 
 // ── IAC parser state ──────────────────────────────────────────────────────────
 

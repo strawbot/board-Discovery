@@ -82,6 +82,6 @@ void tud_cdc_line_state_cb(uint8_t itf, bool dtr, bool rts) {
     if (dtr) {
         // Terminal connected — send prompt via emitq.
         when(EmitEvent, cdc_emit);
-        print("\r\nTimbreOS> ");
+        dotPrompt();
     }
 }

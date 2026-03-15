@@ -57,6 +57,7 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+bool visible_word(char *s) { return true; } // for word filtering; default is none
 
 /* USER CODE END 0 */
 
@@ -93,9 +94,11 @@ int main(void)
   MX_TIM2_Init();
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
-  usart6_transport_init();
 void init_tea();
+void init_cli();
+  usart6_transport_init();
   init_tea();
+  init_cli();
   /* USER CODE END 2 */
 
   /* Infinite loop */
