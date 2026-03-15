@@ -27,3 +27,29 @@ End
 
 Include ../../TimbreOS/WordLists/clibindings.txt
 Include ../../TimbreOS/WordLists/floatwords.txt
+
+Words // system	
+	tabto cli_tabTo // (n) move ahead to line position n
+	key get_key // ( - c ) return character c from key queue or 0
+	key? ask_key // ( - f ) return true if there is a key in the keyq
+	te print_te // print counter, compare value and list of time event actions with due dates
+	telist te_lists // print TE todo and done list of time events
+	pa print_actions // print actions in queue
+	tn dumpTeaNames // dump out names in action name array
+	mstats machineStats // list stats for machines
+	0stats zeroMachineTimes // initialize stats to zero
+	teakeycosts show_key_costs // show key hashes and clustering of teatimes table
+    latency show_latency // show latency stats for time events and actions
+	0latency reset_latency // zero the latency stats; sampled every 10s
+	testtime test_time // ( s ) test ticks, timeouts and time for s seconds
+	tickms ticks_ms // ( tick - ms ) convert tick to milliseconds
+	gtt get_tick_time // print tick and time
+	start cliStartTime // create a reference point
+	end cliEndTime // print time from start
+	play play_events // play out events in event queue and restart recording
+	stop record_event_off // stop recording events
+	record record_events_on // start recording events
+	echoon autoEchoOn // turn on key echo
+	echooff autoEchoOff // turn off key echo
+	nap nap_for // (n) take a nap for n milliseconds
+End

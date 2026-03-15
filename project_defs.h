@@ -10,6 +10,8 @@
 // bigger buffer for accepting long hexscii sequences
 #define CLI_PARAMETERS
 
+#define CLI_TITLE "ActiveRobot"
+
 #define DCELLS 20  // number of data stack cells
 #define RCELLS 20  // number of return stack cells
 #define LINE_LENGTH 400 // number of characters allowed in tib

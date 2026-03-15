@@ -87,7 +87,7 @@ static void usart6_rx_action(void) {
 
     // Direct output back to RS232 before processing any characters.
     when(EmitEvent, usart6_emit);
-//    autoEchoOn();       // RS232 terminal expects device-side echo
+    autoEchoOff();       // RS232 terminal expects device-side echo
 
     while (qbq(cliq))  keyIn(pullbq(cliq));
     // safe( if (qbq(cliq))  later(usart6_rx_action); )
@@ -115,7 +115,5 @@ void usart6_transport_init(void) {
 
     // Establish USART6 as the default CLI transport from boot.
     when(EmitEvent, usart6_emit);
-    autoEchoOn();
-
-    dotPrompt();
+    autoEchoOff();
 }
