@@ -1,5 +1,4 @@
 #include "ttypes.h"
 
-void output() { }
-void system_failure() {}
-Long get_ticks() { return 0; }
+void system_failure() { while (true); }
+void output() { system_failure(); }

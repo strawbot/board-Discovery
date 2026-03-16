@@ -38,7 +38,7 @@ void output();
 
 // UTC and time event clocks
 #define CLOCK_MHZ 168u
-#define ONE_SECOND (84000000)	// for UTC 11.9ns res
+#define ONE_SECOND (10000)	// for UTC 100us res
 #define TE_SECOND ONE_SECOND    // for Delta timer
 
 // Hi res time measurements

@@ -11,11 +11,14 @@ void over_due() { /* incCtr(overDueTea); */ }
 
 // must translate to local timer scale; UTC seconds to DELTA seconds; 1 if same clock
 void set_delta_alarm(Long t) {
-	LL_TIM_SetAutoReload(TIM2, t);
-	LL_TIM_EnableCounter(TIM2);
+	LL_TIM_SetAutoReload(TIM2, t - 1);  // count to t ticks
+	LL_TIM_SetCounter(TIM2, 0);  // reset counter
+	LL_TIM_EnableCounter(TIM2);  // start — stops automatically at ARR in one-pulse mode
 }	
 
-void delta_alarm() { LL_TIM_ClearFlag_UPDATE(TIM2);  (*alarmEvent)(); }
+void delta_alarm() { LL_TIM_ClearFlag_UPDATE(TIM2);  now(*alarmEvent); }
+
+Long get_ticks() { return LL_TIM_GetCounter(TIM5); } // 100 us ticks
 
 void show_timer() {
 	print("UTC:");
@@ -23,7 +26,7 @@ void show_timer() {
 	print("  ticks/S:");
 	printDec(ONE_SECOND);
 	print("  Timer:");
-	dotnb(4, 4, TIM2->CNT, 16);
+	dotnb(8, 8, TIM2->CNT, 16);
 	print("  ticks/S:");
 	printDec(TE_SECOND);
 }
@@ -34,17 +37,17 @@ void micro_sleep() { __WFI(); }
 #define reset_pin(pin) LL_GPIO_ResetOutputPin(pin##_GPIO_Port, pin##_Pin)
 
 static void blink_leds() {
-	static enum {OFF, GREEN, ORANGE, RED, BLUE} color = OFF;
+	static enum {ALL, ORANGE, GREEN, RED, BLUE} color = ALL;
 	switch (color) {
-	case OFF:    set_pin(LD4);                 color = GREEN; break;
-	case GREEN:  set_pin(LD3); reset_pin(LD4); color = ORANGE; break;
-	case ORANGE: set_pin(LD5); reset_pin(LD3); color = RED; break;
-	case RED:    set_pin(LD6); reset_pin(LD5); color = BLUE; break;
-	case BLUE:                 reset_pin(LD6); color = OFF; break;
+	case ALL:    set_pin(LD3); set_pin(LD4); set_pin(LD5); set_pin(LD6);  color = ORANGE; break;
+	case ORANGE:  reset_pin(LD4); reset_pin(LD5); reset_pin(LD6);         color = GREEN; break;
+	case GREEN: set_pin(LD4); reset_pin(LD3);  color = RED; break;
+	case RED:    set_pin(LD5); reset_pin(LD4);  color = BLUE; break;
+	case BLUE:   set_pin(LD6);  reset_pin(LD5); color = ALL; break;
 	}
-	// after(secs(1), blink_leds);
-	later(blink_leds);
-} // LD4_Pin|LD3_Pin|LD5_Pin|LD6_Pin
+	after(secs(1), blink_leds);
+	// later(blink_leds);
+}
 
 // compare times over an interval: sysTicks();
 void init_clocks() {
@@ -59,6 +62,7 @@ void init_clocks() {
 	never(alarmEvent);
 	LL_TIM_SetOnePulseMode(TIM2, LL_TIM_ONEPULSEMODE_SINGLE);
 	LL_TIM_EnableIT_UPDATE(TIM2);
+	LL_TIM_EnableCounter(TIM5);
 	later(blink_leds);
 	namedAction(blink_leds);
 }
