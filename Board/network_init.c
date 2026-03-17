@@ -141,7 +141,7 @@ static void link_callback(struct netif *netif) {
         // netif address alone.  Must be called before apply_static_ip() so
         // that netif_set_addr() does not trigger dhcp_ipv4_addr_changed()
         // with DHCP in a live state, which would set the address back to 0.
-        dhcp_stop(&gnetif);
+        // dhcp_stop(&gnetif);
         netif_set_up(&gnetif);
         apply_static_ip();
         servers_start();
