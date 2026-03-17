@@ -81,7 +81,10 @@ static void telnet_emit(void) {
 
     while (qbq(emitq)) {
         uint8_t ch = pullbq(emitq);
-        tcp_write(current_conn->pcb, &ch, 1, TCP_WRITE_FLAG_COPY);
+        if (ch == '\n') // replace linefeeds with CR LF
+            tcp_write(current_conn->pcb, "\r\n", 2, TCP_WRITE_FLAG_COPY);
+        else
+            tcp_write(current_conn->pcb, &ch, 1, TCP_WRITE_FLAG_COPY);
     }
     tcp_output(current_conn->pcb);
 }
@@ -177,7 +180,8 @@ static err_t telnet_recv(void *arg, struct tcp_pcb *pcb,
         for (uint16_t i = 0; i < q->len; i++) {
             uint8_t byte = buf[i];
             if (iac_process(c, byte)) {
-                keyIn((char)byte);
+                if (byte != 0 && byte != '\n')
+                    keyIn((char)byte);
             }
         }
         q = q->next;
