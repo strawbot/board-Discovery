@@ -39,10 +39,10 @@ void micro_sleep() { __WFI(); }
 static void blink_leds() {
 	static enum {ALL, ORANGE, GREEN, RED, BLUE} color = ALL;
 	switch (color) {
-	case ALL:    set_pin(LD3); set_pin(LD4); set_pin(LD5); set_pin(LD6);  color = ORANGE; break;
-	case ORANGE:  reset_pin(LD4); reset_pin(LD5); reset_pin(LD6);         color = GREEN; break;
-	case GREEN: set_pin(LD4); reset_pin(LD3);  color = RED; break;
-	case RED:    set_pin(LD5); reset_pin(LD4);  color = BLUE; break;
+	case ALL:    set_pin(LD3); set_pin(LD4); set_pin(LD5); set_pin(LD6);  color = GREEN; break;
+	case GREEN:  reset_pin(LD3); reset_pin(LD5); reset_pin(LD6); color = ORANGE; break;
+	case ORANGE:  reset_pin(LD4); set_pin(LD3);  color = RED; break;
+	case RED:    set_pin(LD5); reset_pin(LD3);  color = BLUE; break;
 	case BLUE:   set_pin(LD6);  reset_pin(LD5); color = ALL; break;
 	}
 	after(secs(1), blink_leds);

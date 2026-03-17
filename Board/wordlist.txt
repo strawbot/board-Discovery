@@ -122,6 +122,7 @@ show-eth   show Ethernet link status, speed, duplex and PHY info
 show-http   show HTTP server state and active connections
 show-ip   show IP address, gateway, netmask and DHCP state
 show-net   show LwIP network statistics: RX/TX counts, errors
+show-stats   show packet stats
 show-sys   show system info: clock frequencies and uptime
 show-telnet   show Telnet server state and active connections
 show-timer   show delta timer state and UTC tick counter

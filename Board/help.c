@@ -174,6 +174,7 @@ void help(void) {
     printif("show-http   show HTTP server state and active connections\n");
     printif("show-ip   show IP address, gateway, netmask and DHCP state\n");
     printif("show-net   show LwIP network statistics: RX/TX counts, errors\n");
+    printif("show-stats   show packet stats\n");
     printif("show-sys   show system info: clock frequencies and uptime\n");
     printif("show-telnet   show Telnet server state and active connections\n");
     printif("show-timer   show delta timer state and UTC tick counter\n");

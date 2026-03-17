@@ -20,20 +20,20 @@
 #include "http_server.h"
 #include "telnet_server.h"
 
-#include "lwip/init.h"
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
 #include "lwip/ip_addr.h"
 #include "lwip/dhcp.h"
 #include "lwip/sys.h"
 #include "netif/etharp.h"
+#include "netif/ethernet.h"
 
 // ── sys_now — required by LwIP timeouts.c ─────────────────────────────────────
 // LwIP calls this for every timer operation.  We have no SysTick and no OS;
-// get_ticks() from tea.c returns the delta-timer millisecond count.
+// getTime() from tea.c returns the delta-timer millisecond count.
 
 u32_t sys_now(void) {
-    return (u32_t)get_ticks();
+    return (u32_t)getTime();
 }
 
 // ── IP configuration ──────────────────────────────────────────────────────────
@@ -57,8 +57,7 @@ u32_t sys_now(void) {
 #define STATIC_MASK2  255
 #define STATIC_MASK3    0
 
-// MAC address — set to match your board or OTP fuses.
-static uint8_t mac_addr[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
+// MAC address is set by MX_LWIP_Init() in LWIP/App/lwip.c (CubeMX-generated).
 
 // ── DHCP state ────────────────────────────────────────────────────────────────
 
@@ -96,13 +95,11 @@ void dhcp_timeout_action(void) {
         return;     // DHCP succeeded or link went down before timeout
     }
 
-    print("NET: DHCP timeout — using static IP\r\n");
+    print("NET: DHCP timeout — keeping static IP\r\n");
 
     dhcp_stop(&gnetif);
     dhcp_state = DHCP_STATE_FALLBACK;
-
-    apply_static_ip();
-    servers_start();
+    // apply_static_ip() and servers_start() were already called on link-up.
 }
 
 // ── dhcp_check_action ─────────────────────────────────────────────────────────
@@ -114,14 +111,12 @@ void dhcp_check_action(void) {
         return;
     }
 
-    struct dhcp *d = netif_dhcp_data(&gnetif);
-    if (d && d->state == DHCP_STATE_BOUND) {
+    if (dhcp_supplied_address(&gnetif)) {
         dhcp_state = DHCP_STATE_BOUND;
         print("NET: DHCP bound — IP: ");
         print(ip4addr_ntoa(netif_ip4_addr(&gnetif)));
         print("\r\n");
-        netif_set_up(&gnetif);
-        servers_start();
+        // netif and servers already up from link_callback; IP was updated by DHCP.
     } else {
         // Still waiting — check again in 1 s.
         after(1000, dhcp_check_action);
@@ -134,29 +129,28 @@ void dhcp_check_action(void) {
 
 static void link_callback(struct netif *netif) {
     if (netif_is_link_up(netif)) {
-        print("NET: link up — starting DHCP\r\n");
-
-        dhcp_state = DHCP_STATE_TRYING;
-
-        // Start DHCP — address will be zero until lease is acquired.
-        dhcp_start(netif);
-
-        // Schedule fallback in case DHCP never responds.
-        after(DHCP_TIMEOUT_MS, dhcp_timeout_action);
-
-        // Start polling for DHCP lease acquisition every second.
-        after(1000, dhcp_check_action);
-
-        // Kick the LwIP timeout chain now that we have a link.
+        // Use static IP directly — no DHCP.
+        // dhcp_start() zeros the netif address; setting a static IP while DHCP
+        // is active triggers LwIP's dhcp_ipv4_addr_changed hook which resets
+        // DHCP back to INIT and re-zeros the address.  Skipping DHCP avoids
+        // that fight entirely.  Re-enable when a DHCP server is available.
+        print("NET: link up\r\n");
+        dhcp_state = DHCP_STATE_FALLBACK;
+        // Neutralise any DHCP started by MX_LWIP_Init() before we arrived.
+        // dhcp_stop() sets state=OFF so the fine/coarse timers leave the
+        // netif address alone.  Must be called before apply_static_ip() so
+        // that netif_set_addr() does not trigger dhcp_ipv4_addr_changed()
+        // with DHCP in a live state, which would set the address back to 0.
+        dhcp_stop(&gnetif);
+        netif_set_up(&gnetif);
+        apply_static_ip();
+        servers_start();
         kick_lwip_timer();
 
     } else {
         print("NET: link down\r\n");
-
         dhcp_state = DHCP_STATE_OFF;
-        dhcp_stop(netif);
         netif_set_down(netif);
-
         servers_stop();
     }
 }
@@ -192,39 +186,40 @@ static void kick_lwip_timer(void) {
     }
 }
 
+void lwip_assert_handler(const char *msg) {
+    print("LWIP assert: ");
+    print(msg);
+    printCr();
+}
+
 // ── network_init ──────────────────────────────────────────────────────────────
-// Call once from main after init_clocks() and before the action loop.
+// Call once from main AFTER MX_LWIP_Init() has run.
+// MX_LWIP_Init() owns lwip_init(), netif_add(), and hwaddr setup.
+// This function adds board-specific callbacks and starts services on top.
 
 void network_init(void) {
-    // ── LwIP core ─────────────────────────────────────────────────────────────
-    lwip_init();
-
-    // ── Ethernet netif ────────────────────────────────────────────────────────
-    // Start with zeroed addresses — DHCP will fill them in.
-    // If DHCP times out, dhcp_timeout_action() applies the static fallback.
-    ip4_addr_t zero;
-    IP4_ADDR(&zero, 0, 0, 0, 0);
-
-    for (int i = 0; i < 6; i++) {
-        gnetif.hwaddr[i] = mac_addr[i];
-    }
-    gnetif.hwaddr_len = 6;
-
-    netif_add(&gnetif, &zero, &zero, &zero,
-              NULL,               // state — not used
-              ethernetif_init,    // init callback — sets up HAL ETH + DMA
-              ethernet_input);    // input — standard LwIP Ethernet input
-
     netif_set_default(&gnetif);
 
-    // Link callback fires on cable plug/unplug via eth_link_action().
+    // CubeMX may generate MX_LWIP_Init() with NO_SYS=0, which sets
+    // gnetif.input = tcpip_input (the RTOS mailbox version).  Without a
+    // tcpip thread running, that function silently queues every received
+    // frame and never processes it.  For bare-metal operation we need
+    // ethernet_input called directly.  Setting it here is safe and idempotent:
+    // if NO_SYS=1 is already in effect, tcpip_input IS ethernet_input and
+    // this write is a no-op.
+    gnetif.input = ethernet_input;
+
+    // Link callback fires when eth_link_action() calls netif_set_link_up/down.
     netif_set_link_callback(&gnetif, link_callback);
 
-    // ── Servers ───────────────────────────────────────────────────────────────
-    // Initialise fixed PCB pools and listener state now.
-    // _start() is called from link_callback once an IP address is confirmed.
+    // Start the 1-second BSR polling loop for LAN8720 link detection.
+    later(eth_link_action);
+    namedAction(eth_link_action);
+
+    // Initialise fixed PCB pools — _start() called from link_callback
+    // once an IP address is confirmed.
     http_server_init();
     telnet_server_init();
-
+    namedAction(lwip_timeout_action);
     print("NET: init done\r\n");
 }

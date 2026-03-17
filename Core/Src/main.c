@@ -26,6 +26,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "cli_transport_usart6.h"
+#include "tea.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -100,6 +101,8 @@ void init_cli();
   usart6_transport_init();
   init_tea();
   init_cli();
+  void network_init(void);
+  later(network_init);
   /* USER CODE END 2 */
 
   /* Infinite loop */

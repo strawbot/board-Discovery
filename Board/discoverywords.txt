@@ -13,6 +13,7 @@ Words // network
 	show-net		show_net		// show LwIP network statistics: RX/TX counts, errors
 	show-http		show_http		// show HTTP server state and active connections
 	show-telnet		show_telnet		// show Telnet server state and active connections
+	show-stats      show_stats      // show packet stats
 End
 
 Words // usb

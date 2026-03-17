@@ -26,6 +26,7 @@ NAMES(wordnames)
 	NAME("show-net")		//  show LwIP network statistics: RX/TX counts, errors
 	NAME("show-http")		//  show HTTP server state and active connections
 	NAME("show-telnet")		//  show Telnet server state and active connections
+	NAME("show-stats")		//  show packet stats
 	NAME("show-usb")		//  show USB connection state and CDC line status
 	NAME("show-sys")		//  show system info: clock frequencies and uptime
 	NAME("show-timer")		//  show delta timer state and UTC tick counter
@@ -161,6 +162,7 @@ void show_ip(void);
 void show_net(void);
 void show_http(void);
 void show_telnet(void);
+void show_stats(void);
 void show_usb(void);
 void show_sys(void);
 void show_timer(void);
@@ -296,6 +298,7 @@ BODIES(wordbodies)
 	BODY(show_net)
 	BODY(show_http)
 	BODY(show_telnet)
+	BODY(show_stats)
 	BODY(show_usb)
 	BODY(show_sys)
 	BODY(show_timer)

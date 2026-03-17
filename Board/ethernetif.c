@@ -3,6 +3,7 @@
 
 #include "stm32f4xx_hal.h"
 #include "stm32f4xx_hal_eth.h"
+#include "stm32f4xx_hal_gpio.h"
 
 #include "lwip/opt.h"
 #include "lwip/def.h"
@@ -12,6 +13,7 @@
 #include "netif/etharp.h"
 
 #include "tea.h"
+#include "printers.h"
 #include "ethernetif.h"
 
 // ── Configuration ─────────────────────────────────────────────────────────────
@@ -21,26 +23,26 @@
 #define ETH_RX_BUFFER_SIZE      1524    // max Ethernet frame + alignment
 #define ETH_TX_TIMEOUT          100     // ms — synchronous transmit timeout
 
-#define DP83848_PHY_ADDRESS     0x01U
+// LAN8720 PHY address — set by PHYAD strap pin on your board (0x00 or 0x01).
+#define LAN8720_PHY_ADDRESS     0x00U
 
-// DP83848 register map
-#define DP83848_BCR             0x00U
-#define DP83848_BSR             0x01U
-#define DP83848_PHYSTS          0x10U
-#define DP83848_MICR            0x11U
-#define DP83848_MISR            0x12U
+// LAN8720 register map
+#define LAN8720_BCR             0x00U   // Basic Control
+#define LAN8720_BSR             0x01U   // Basic Status
+#define LAN8720_ISF             0x1DU   // Interrupt Source Flag  (read-to-clear)
+#define LAN8720_IMR             0x1EU   // Interrupt Mask Register
+#define LAN8720_SCSR            0x1FU   // Special Control/Status (speed + duplex)
 
-// PHYSTS bits
-#define DP83848_PHYSTS_LINK_UP  (1U << 0)
-#define DP83848_PHYSTS_SPEED_10 (1U << 1)
-#define DP83848_PHYSTS_DUPLEX   (1U << 2)
+// BSR bits
+#define LAN8720_BSR_LINK_UP     (1U << 2)   // Link status
 
-// MICR bits
-#define DP83848_MICR_INTEN      (1U << 1)
-#define DP83848_MICR_INTOE      (1U << 0)
+// SCSR bits [4:2]: HCDSPEED — speed/duplex after autoneg
+#define LAN8720_SCSR_SPEED_MASK 0x001CU     // bits [4:2]
+#define LAN8720_SCSR_10_HALF    (1U << 2)   // 001
+#define LAN8720_SCSR_100_HALF   (2U << 2)   // 010
+#define LAN8720_SCSR_10_FULL    (5U << 2)   // 101
+#define LAN8720_SCSR_100_FULL   (6U << 2)   // 110
 
-// MISR bits
-#define DP83848_MISR_LINK_INT   (1U << 5)
 
 // ── STM32F4 ETH DMA RX descriptor bits (hardware, version-independent) ────────
 // These are hardware register bits, not HAL defines — safe across all HAL revisions.
@@ -65,10 +67,37 @@ static ETH_BufferTypeDef  tx_buffers[ETH_TX_DESC_COUNT];
 // RX read index — tracks next descriptor to consume, independent of heth.RxDescList.
 static uint32_t rx_read_idx = 0;
 
+// Diagnostic counters — readable via show_ethernet().
+volatile uint32_t eth_rx_irq_count      = 0;  // incremented by HAL_ETH_RxCpltCallback
+volatile uint32_t eth_rx_frame_count    = 0;  // incremented each frame consumed by ethernetif_input
+volatile uint32_t eth_rx_input_err      = 0;  // netif->input returned non-ERR_OK
+volatile uint32_t eth_rx_etype_arp      = 0;  // EtherType 0x0806 (ARP) frames received
+volatile uint32_t eth_rx_etype_ip       = 0;  // EtherType 0x0800 (IPv4) frames received
+volatile uint32_t eth_rx_etype_other    = 0;  // EtherType not ARP or IPv4
+volatile uint32_t eth_tx_call_count     = 0;  // incremented every call to ethernetif_output
+volatile uint32_t eth_tx_ok_count       = 0;  // HAL_ETH_Transmit returned HAL_OK
+volatile uint32_t eth_tx_err_count      = 0;  // HAL_ETH_Transmit returned HAL_ERROR
+volatile uint32_t eth_tx_timeout_count  = 0;  // HAL_ETH_Transmit returned HAL_TIMEOUT
+volatile uint32_t eth_tx_arp_count      = 0;  // outgoing frames with EtherType 0x0806 (ARP)
+volatile uint32_t eth_tx_ip_count       = 0;  // outgoing frames with EtherType 0x0800 (IP)
+uint8_t           eth_tx_last_ip_dst[6] = {0}; // dest MAC of most recent outgoing IP frame
+volatile uint32_t dbg_eth_input_entry   = 0;  // increments if ethernet_input is reached at all
+volatile uint32_t dbg_eth_input_lendrop = 0;  // p->len <= SIZEOF_ETH_HDR
+volatile uint32_t dbg_eth_input_hdrdrop = 0;  // pbuf_remove_header failed
+volatile uint32_t dbg_eth_input_nodispatch = 0; // ethertype fell through switch
+
 // rx_alloc_idx used only by HAL_ETH_RxAllocCallback during HAL_ETH_Start_IT().
 static uint32_t rx_alloc_idx = 0;
 
 ETH_HandleTypeDef heth;         // not static — referenced by discovery_cli.c
+
+// Saved init results — readable from show_ethernet() after USART6 is ready.
+// 0xFF means "not yet called".
+HAL_StatusTypeDef eth_init_rc     = (HAL_StatusTypeDef)0xFF;
+HAL_StatusTypeDef eth_start_rc    = (HAL_StatusTypeDef)0xFF;
+uint8_t           eth_init_gstate  = 0;
+uint32_t          eth_init_error   = 0;
+uint8_t           eth_start_gstate = 0;
 
 // gnetif is defined in LWIP/App/lwip.c (CubeMX-generated).
 // ethernetif.h declares it extern so all other files see it.
@@ -108,18 +137,15 @@ void HAL_ETH_RxAllocCallback(ETH_HandleTypeDef *heth_cb, ETH_BufferTypeDef *buff
 
 static uint16_t phy_read(uint16_t reg) {
     uint32_t val = 0;
-    HAL_ETH_ReadPHYRegister(&heth, DP83848_PHY_ADDRESS, reg, &val);
+    HAL_ETH_ReadPHYRegister(&heth, LAN8720_PHY_ADDRESS, reg, &val);
     return (uint16_t)val;
-}
-
-static void phy_write(uint16_t reg, uint16_t val) {
-    HAL_ETH_WritePHYRegister(&heth, DP83848_PHY_ADDRESS, reg, val);
 }
 
 // ── HAL RX complete callback ──────────────────────────────────────────────────
 
 void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth_cb) {
     (void)heth_cb;
+    eth_rx_irq_count++;
     switch (eth_task_state) {
         case ETH_TASK_IDLE:
             eth_task_state = ETH_TASK_QUEUED;
@@ -138,15 +164,80 @@ void HAL_ETH_TxCpltCallback(ETH_HandleTypeDef *heth_cb) {
     (void)heth_cb;
 }
 
-// ── PHY interrupt callback ────────────────────────────────────────────────────
 
-void eth_phy_irq(void) {
-    later(eth_link_action);
+// ── HAL_ETH_MspInit ───────────────────────────────────────────────────────────
+// CubeMX normally generates this inside LWIP/Target/ethernetif.c.  Since we
+// exclude that file (to avoid duplicate symbol errors), we provide it here.
+//
+// RMII pinout for STM32F4-Discovery + LAN8720 extender board:
+//   PA1  ETH_REF_CLK   — AF11 = ETH_RMII_REF_CLK  (50 MHz from LAN8720 REFCLK0)
+//   PA2  ETH_MDIO      — AF11 = ETH_MDIO
+//   PA7  ETH_CRS_DV    — AF11 = ETH_RMII_CRS_DV
+//   PB11 ETH_TX_EN     — AF11 = ETH_RMII_TX_EN
+//   PB12 ETH_TXD0      — AF11 = ETH_RMII_TXD0
+//   PB13 ETH_TXD1      — AF11 = ETH_RMII_TXD1
+//   PC1  ETH_MDC       — AF11 = ETH_MDC
+//   PC4  ETH_RXD0      — AF11 = ETH_RMII_RXD0
+//   PC5  ETH_RXD1      — AF11 = ETH_RMII_RXD1
+//
+// Verified against .ioc: PB11=TX_EN, PB12=TXD0, PB13=TXD1.
+
+void HAL_ETH_MspInit(ETH_HandleTypeDef *hethMsp) {
+    if (hethMsp->Instance != ETH) { return; }
+
+    // ── Enable peripheral clocks ──────────────────────────────────────────────
+    __HAL_RCC_ETHMAC_CLK_ENABLE();      // ETH MAC
+    __HAL_RCC_ETHMACTX_CLK_ENABLE();   // ETH TX
+    __HAL_RCC_ETHMACRX_CLK_ENABLE();   // ETH RX
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+
+    // ── Select RMII (not MII) via SYSCFG_PMC ─────────────────────────────────
+    SET_BIT(SYSCFG->PMC, SYSCFG_PMC_MII_RMII_SEL);
+
+    // ── Configure all RMII pins as AF11, no pull, very-high speed ────────────
+    GPIO_InitTypeDef gpio = { 0 };
+    gpio.Mode      = GPIO_MODE_AF_PP;
+    gpio.Pull      = GPIO_NOPULL;
+    gpio.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF11_ETH;
+
+    // PA1 (REF_CLK), PA2 (MDIO), PA7 (CRS_DV)
+    gpio.Pin = GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_7;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    // PB11 (TX_EN), PB12 (TXD0), PB13 (TXD1)
+    gpio.Pin = GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    // PC1 (MDC), PC4 (RXD0), PC5 (RXD1)
+    gpio.Pin = GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5;
+    HAL_GPIO_Init(GPIOC, &gpio);
+
+    // ── Enable ETH interrupt ──────────────────────────────────────────────────
+    HAL_NVIC_SetPriority(ETH_IRQn, 7, 0);
+    HAL_NVIC_EnableIRQ(ETH_IRQn);
 }
 
 // ── ethernetif_init ───────────────────────────────────────────────────────────
+volatile uint8_t dbg_hwaddr[6];
+// Also capture the destination MAC of a received ICMP frame:
+volatile uint8_t dbg_icmp_dst_mac[6];
 
 err_t ethernetif_init(struct netif *netif) {
+    // ── MAC address ───────────────────────────────────────────────────────────
+    // CubeMX sets the MAC inside the excluded LWIP/Target/ethernetif.c.
+    // We must set it here so HAL_ETH_Init programs it into hardware.
+    // 0x02 = locally-administered unicast.  Change to your real OUI if needed.
+    static const uint8_t default_mac[ETH_HWADDR_LEN] = {
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x01
+    };
+    netif->hwaddr_len = ETH_HWADDR_LEN;
+    memcpy(netif->hwaddr, default_mac, ETH_HWADDR_LEN);
+
     // ── HAL ETH init ─────────────────────────────────────────────────────────
     heth.Instance            = ETH;
     heth.Init.MACAddr        = netif->hwaddr;
@@ -155,7 +246,10 @@ err_t ethernetif_init(struct netif *netif) {
     heth.Init.RxDesc         = rx_desc;
     heth.Init.RxBuffLen      = ETH_RX_BUFFER_SIZE;
 
-    if (HAL_ETH_Init(&heth) != HAL_OK) {
+    eth_init_rc     = HAL_ETH_Init(&heth);
+    eth_init_gstate = heth.gState;
+    eth_init_error  = heth.ErrorCode;
+    if (eth_init_rc != HAL_OK) {
         return ERR_IF;
     }
 
@@ -174,12 +268,14 @@ err_t ethernetif_init(struct netif *netif) {
     }
     __DSB();    // ensure descriptor writes are visible to DMA before start
 
-    // ── PHY interrupt — link status change only ───────────────────────────────
-    phy_write(DP83848_MICR, DP83848_MICR_INTEN | DP83848_MICR_INTOE);
-    phy_write(DP83848_MISR, DP83848_MISR_LINK_INT);
+    // ── PHY link polling ──────────────────────────────────────────────────────
+    // LAN8720 NINT/REFCLK0 (PA1) is used as ETH_REF_CLK — the 50 MHz RMII
+    // reference clock.  The interrupt output is therefore not available.
+    // Link state is detected by polling BSR once per second via eth_link_action.
 
     // ── Start ETH with interrupt-driven RX ───────────────────────────────────
-    HAL_ETH_Start_IT(&heth);
+    eth_start_rc     = HAL_ETH_Start_IT(&heth);
+    eth_start_gstate = heth.gState;
 
     // ── LwIP netif fields ─────────────────────────────────────────────────────
     netif->name[0]    = 'e';
@@ -191,6 +287,9 @@ err_t ethernetif_init(struct netif *netif) {
     netif->flags      = NETIF_FLAG_BROADCAST
                       | NETIF_FLAG_ETHARP
                       | NETIF_FLAG_ETHERNET;
+
+                      // In ethernetif_init or after netif_add:
+memcpy(dbg_hwaddr, netif->hwaddr, 6);
 
     return ERR_OK;
 }
@@ -213,12 +312,41 @@ static err_t ethernetif_output(struct netif *netif, struct pbuf *p) {
     TxConfig.Length   = p->tot_len;
     TxConfig.TxBuffer = tx_buffers;
     TxConfig.pData    = p;
+    TxConfig.Attributes   = ETH_TX_PACKETS_FEATURES_CSUM;
+    TxConfig.ChecksumCtrl = ETH_CHECKSUM_IPHDR_PAYLOAD_INSERT_PHDR_CALC;
 
-    if (HAL_ETH_Transmit(&heth, &TxConfig, ETH_TX_TIMEOUT) != HAL_OK) {
-        return ERR_IF;
+    eth_tx_call_count++;
+    // Classify outgoing frame by EtherType (bytes 12-13 of the pbuf payload).
+    // The pbuf passed to linkoutput already has the Ethernet header prepended.
+    if (p->len >= 14U) {
+        const uint8_t *b = (const uint8_t *)p->payload;
+        uint16_t etype = ((uint16_t)b[12] << 8) | b[13];
+        if      (etype == 0x0806U) eth_tx_arp_count++;
+        else if (etype == 0x0800U) {
+            eth_tx_ip_count++;
+            memcpy((void *)eth_tx_last_ip_dst, b, 6U); // first 6 bytes = dest MAC
+        }
     }
-    return ERR_OK;
+    HAL_StatusTypeDef tx_rc = HAL_ETH_Transmit(&heth, &TxConfig, ETH_TX_TIMEOUT);
+    if (tx_rc == HAL_OK) {
+        eth_tx_ok_count++;
+        return ERR_OK;
+    } else if (tx_rc == HAL_TIMEOUT) {
+        eth_tx_timeout_count++;
+    } else {
+        eth_tx_err_count++;
+    }
+    return ERR_IF;
 }
+
+// Add to your IP frame debug variables:
+volatile uint16_t eth_rx_pbuf_tot_len = 0;
+volatile uint16_t eth_rx_ip_hdr_len_field = 0;
+volatile uint8_t  eth_rx_last_ip_proto = 0;   // IP protocol byte
+volatile uint8_t  eth_rx_last_src_ip[4] = {0}; // source IP
+volatile uint8_t  eth_rx_last_dst_ip[4] = {0}; // destination IP
+volatile uint32_t eth_rx_icmp_count = 0;        // frames where proto==1
+volatile uint32_t dbg_icmp_fl = 0;   // add at file scope
 
 // ── ethernetif_input — direct DMA descriptor access ──────────────────────────
 // HAL_ETH_GetRxDataBuffer / GetRxDataLength / BuildRxDescriptors are absent in
@@ -229,6 +357,8 @@ static err_t ethernetif_output(struct netif *netif, struct pbuf *p) {
 // kick the DMA if it stopped waiting for a descriptor.
 //
 // Returns true if a frame was consumed (caller should loop until false).
+volatile uint8_t eth_rx_ip_ver_byte;   // add to header
+volatile uint32_t dbg_raw_fl = 0;
 
 bool ethernetif_input(struct netif *netif) {
     ETH_DMADescTypeDef *desc   = &rx_desc[rx_read_idx];
@@ -241,8 +371,9 @@ bool ethernetif_input(struct netif *netif) {
 
     // Frame length from RDES0 bits [29:16]; hardware count includes 4-byte FCS.
     uint32_t framelength = (status & RDES0_FL_MASK) >> RDES0_FL_SHIFT;
+    dbg_raw_fl = framelength;   // ← what hardware reported
     if (framelength > 4U) {
-        framelength -= 4U;
+        // framelength -= 4U;
     } else {
         framelength = 0U;
     }
@@ -258,6 +389,7 @@ bool ethernetif_input(struct netif *netif) {
         && (status & RDES0_LS))
     {
         p = pbuf_alloc(PBUF_RAW, (uint16_t)framelength, PBUF_POOL);
+
         if (p != NULL) {
             uint8_t *src = rx_buf[rx_read_idx]; // fixed mapping: desc[i] ↔ buf[i]
             for (struct pbuf *q = p; q != NULL; q = q->next) {
@@ -284,7 +416,39 @@ bool ethernetif_input(struct netif *netif) {
     }
 
     if (p != NULL) {
+        eth_rx_frame_count++;
+
+        // Peek at EtherType (bytes 12-13 of the Ethernet header) from the pbuf
+        // payload, which is a safe copy of the DMA buffer made above.
+        // p->payload starts at byte 0 of the Ethernet frame.
+        if (p->tot_len >= 14U) {
+            const uint8_t *pl = (const uint8_t *)p->payload;
+            uint16_t etype = ((uint16_t)pl[12] << 8) | pl[13];
+            if      (etype == 0x0806U) eth_rx_etype_arp++;
+            else if (etype == 0x0800U) {
+                eth_rx_etype_ip++;
+                eth_rx_ip_ver_byte = ((const uint8_t *)p->payload)[14];
+                // In ethernetif_input, where you detect EtherType 0x0800:
+                eth_rx_last_ip_proto  = pl[23];          // IP protocol (1=ICMP, 17=UDP, 6=TCP)
+                eth_rx_last_src_ip[0] = pl[26];          // source IP bytes
+                eth_rx_last_src_ip[1] = pl[27];
+                eth_rx_last_src_ip[2] = pl[28];
+                eth_rx_last_src_ip[3] = pl[29];
+                eth_rx_last_dst_ip[0] = pl[30];
+                eth_rx_last_dst_ip[1] = pl[31];
+                eth_rx_last_dst_ip[2] = pl[32];
+                eth_rx_last_dst_ip[3] = pl[33];
+                if (pl[23] == 0x01U) { 
+                    eth_rx_icmp_count++;
+                    dbg_icmp_fl = framelength;   // ← framelength after the -= 4 subtraction
+                    memcpy(dbg_icmp_dst_mac, pl, 6);  // b[0..5] = dst MAC
+                } // ICMP frames
+            }
+                                             // byte 14 = first byte of IP header (should be 0x45)
+            else                       eth_rx_etype_other++;
+        }
         if (netif->input(p, netif) != ERR_OK) {
+            eth_rx_input_err++;
             pbuf_free(p);
         }
     }
@@ -310,6 +474,7 @@ void eth_input_action(void) {
             eth_task_state = ETH_TASK_IDLE;
             break;
         default:
+            dbg_eth_input_nodispatch++;
             break;
     }
 }
@@ -320,24 +485,29 @@ void ethernet_link_check_state(struct netif *netif) {
     (void)netif;
 }
 
-// ── eth_link_action — tea.c action, posted by PHY interrupt ──────────────────
+// ── eth_link_action — tea.c action, polls BSR once per second ────────────────
+// NINT is unavailable (PA1 = ETH_REF_CLK), so we poll rather than interrupt.
+// Call eth_link_action() once at startup to begin the polling loop.
 
 void eth_link_action(void) {
-    (void)phy_read(DP83848_MISR);   // read clears interrupt
+    after(1000, eth_link_action);   // reschedule before any early return
 
-    uint16_t physts  = phy_read(DP83848_PHYSTS);
-    bool     up      = (physts & DP83848_PHYSTS_LINK_UP)  != 0;
-    bool     full_dx = (physts & DP83848_PHYSTS_DUPLEX)   != 0;
-    bool     spd10   = (physts & DP83848_PHYSTS_SPEED_10) != 0;
+    uint16_t bsr  = phy_read(LAN8720_BSR);
+    bool     up   = (bsr & LAN8720_BSR_LINK_UP) != 0;
 
     if (up && link_state == LINK_DOWN) {
         link_state = LINK_UP;
+
+        // Read speed/duplex from SCSR bits [4:2] (valid after autoneg).
+        uint16_t speed   = phy_read(LAN8720_SCSR) & LAN8720_SCSR_SPEED_MASK;
+        bool     full_dx = (speed == LAN8720_SCSR_10_FULL)  || (speed == LAN8720_SCSR_100_FULL);
+        bool     spd100  = (speed == LAN8720_SCSR_100_HALF) || (speed == LAN8720_SCSR_100_FULL);
 
         // Update MAC speed and duplex to match autoneg result.
         ETH_MACConfigTypeDef MACConf = { 0 };
         HAL_ETH_GetMACConfig(&heth, &MACConf);
         MACConf.DuplexMode = full_dx ? ETH_FULLDUPLEX_MODE : ETH_HALFDUPLEX_MODE;
-        MACConf.Speed      = spd10   ? ETH_SPEED_10M       : ETH_SPEED_100M;
+        MACConf.Speed      = spd100  ? ETH_SPEED_100M      : ETH_SPEED_10M;
         HAL_ETH_SetMACConfig(&heth, &MACConf);
 
         netif_set_link_up(&gnetif);
