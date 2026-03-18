@@ -40,11 +40,6 @@ extern volatile uint32_t dbg_eth_input_entry   ;  // increments if ethernet_inpu
 extern volatile uint32_t dbg_eth_input_lendrop ;  // p->len <= SIZEOF_ETH_HDR
 extern volatile uint32_t dbg_eth_input_hdrdrop ;  // pbuf_remove_header failed
 extern volatile uint32_t dbg_eth_input_nodispatch ; // ethertype fell through switch
-extern volatile uint32_t dbg_eth_entry   ;  // every call
-extern volatile uint32_t dbg_eth_ip_entry;  // reached ETHTYPE_IP case
-extern volatile uint32_t dbg_eth_noetharp;  // dropped: NETIF_FLAG_ETHARP not set
-extern volatile uint32_t dbg_eth_hdr_drop;  // dropped: pbuf_remove_header failed
-extern volatile uint32_t dbg_eth_to_ip4  ;  // reached ip4_input() call
 extern volatile uint32_t dbg_raw_fl;
 extern volatile uint32_t dbg_icmp_fl;   // add at file scope
 
@@ -236,11 +231,6 @@ void show_ethernet(void) {
     print("\ndbg_eth_input_lendrop="), printDec(dbg_eth_input_lendrop);
     print("\ndbg_eth_input_hdrdrop="), printDec(dbg_eth_input_hdrdrop);
     print("\ndbg_eth_input_nodispatch="), printDec(dbg_eth_input_nodispatch);
-    print("\ndbg_eth_entry="), printDec(dbg_eth_entry);
-    print("\ndbg_eth_ip_entry="), printDec(dbg_eth_ip_entry);
-    print("\ndbg_eth_noetharp="), printDec(dbg_eth_noetharp);
-    print("\ndbg_eth_hdr_drop="), printDec(dbg_eth_hdr_drop);
-    print("\ndbg_eth_to_ip4="), printDec(dbg_eth_to_ip4);
     print("\ndbg_raw_fl="), printDec(dbg_raw_fl);
     print("\ndbg_icmp_fl="), printDec(dbg_icmp_fl);
 }
@@ -356,6 +346,8 @@ void show_net(void) {
 
 #if LWIP_STATS
 #include "lwip/stats.h"
+extern volatile uint32_t dbg_http_recv;
+
 void show_stats(void) {
     char b[12];
     print("ip.recv=");  uitoa(lwip_stats.ip.recv,   b); print(b); printCr();
@@ -370,8 +362,13 @@ void show_stats(void) {
     print("icmp.err="); uitoa(lwip_stats.icmp.err,  b); print(b); printCr();
     print("mem.used="); uitoa(lwip_stats.mem.used,  b); print(b); printCr();
     print("mem.err=");  uitoa(lwip_stats.mem.err,   b); print(b); printCr();
+    print("\nlwip_sntats.memp[MEMP_PBUF_POOL]->used="), printDec(lwip_stats.memp[MEMP_PBUF_POOL]->used);
+    print("\nlwip_stats.memp[MEMP_PBUF_POOL]->max="), printDec(lwip_stats.memp[MEMP_PBUF_POOL]->max);
+    print("\nlwip_stats.mem.used="), printDec(lwip_stats.mem.used);
+    print("\ndbg_http_recv="), printDec(dbg_http_recv);
 }
 #endif
+
 
 void show_http(void) {
     // Connection state counts reported from http_server.c
@@ -382,7 +379,7 @@ void show_http(void) {
     print("HTTP idle:   "); printDec(idle);   printCr();
     print("HTTP port:   80"); printCr();
 }
-
+                 // heap bytes in use
 void show_telnet(void) {
     uint8_t active = 0, idle = 0;
     telnet_server_stats(&active, &idle);

@@ -2,6 +2,8 @@
 #define HTTP_CONTENT_H
 
 #include <stdint.h>
+#include "byteq.h"
+#include "cli.h"
 
 // ── Flash-resident HTTP response ──────────────────────────────────────────────
 // Each entry is a complete HTTP response: status line + headers + blank + body.
@@ -13,50 +15,169 @@ typedef struct {
     uint32_t    length;
 } http_response_t;
 
-// ── Route table entry ─────────────────────────────────────────────────────────
+typedef const http_response_t *(*http_handler_fn)(const char *req, uint16_t len);
 
+// ── Route table entry ─────────────────────────────────────────────────────────
 typedef struct {
-    const char           *url;
-    const http_response_t *response;
+    const char            *method;    /* "GET" or "POST"   */
+    const char            *url;
+    const http_response_t *response;  /* non-NULL: static  */
+    http_handler_fn        handler;   /* non-NULL: dynamic */
 } http_route_t;
 
-// ── Responses — add one per page ──────────────────────────────────────────────
+// 
+static const char s_404[] = "HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+static const char s_204[] = "HTTP/1.0 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+static const http_response_t http_404 = { s_404, sizeof(s_404)-1 };
+static const http_response_t http_204 = { s_204, sizeof(s_204)-1 };
 
-static const char resp_index[] =
-    "HTTP/1.1 200 OK\r\n"
+static const char index_html_data[] =
+    "HTTP/1.0 200 OK\r\n"
     "Content-Type: text/html\r\n"
     "Connection: close\r\n"
     "\r\n"
-    "<!DOCTYPE html><html><head><title>ActiveRobot</title></head>"
-    "<body><h1>ActiveRobot</h1><p>System running.</p></body></html>";
+    "<!DOCTYPE html><html><head><meta charset=utf-8><title>STM32</title><style>"
+    "*{box-sizing:border-box}body{margin:0;font:13px monospace;background:#1a1a1a;color:#ccc}"
+    ".nav{display:flex;background:#111;border-bottom:1px solid #333}"
+    ".nav button{padding:8px 18px;background:none;border:none;color:#888;"
+                "cursor:pointer;font:inherit}"
+    ".nav button.on{color:#fff;border-bottom:2px solid #4af}"
+    ".pg{display:none;padding:12px}.pg.on{display:block}"
+    "table{width:100%;border-collapse:collapse}"
+    "td{padding:4px 8px;border-bottom:1px solid #2a2a2a}"
+    "td:first-child{color:#88f;width:45%}"
+    "#scr{background:#000;color:#0f0;height:400px;overflow-y:auto;"
+         "padding:8px;white-space:pre-wrap;word-break:break-all}"
+    "#inp{display:block;width:100%;margin-top:4px;padding:6px;"
+         "background:#111;color:#0f0;border:1px solid #333;font:inherit;outline:none}"
+    "</style></head><body>"
+    "<div class=nav>"
+    "<button class=on id=b0 onclick=sw(0)>Status</button>"
+    "<button id=b1 onclick=sw(1)>Terminal</button>"
+    "</div>"
+    "<div class='pg on' id=p0><table id=tbl></table></div>"
+    "<div class=pg id=p1><div id=scr></div>"
+    "<input id=inp placeholder='Enter command...'></div>"
+    "<script>"
+    "var scr=document.getElementById('scr'),"
+        "inp=document.getElementById('inp');"
+    "function sw(n){"
+      "[0,1].forEach(function(i){"
+        "document.getElementById('p'+i).className='pg'+(i==n?' on':'');"
+        "document.getElementById('b'+i).className=i==n?'on':'';"
+      "});"
+    "}"
+    /* --- Status tab --- */
+    "function pollS(){"
+      "fetch('/status.json')"
+      ".then(function(r){return r.json();})"
+      ".then(function(d){"
+        "document.getElementById('tbl').innerHTML="
+        "Object.entries(d).map(function(e){"
+          "return '<tr><td>'+e[0]+'<td>'+e[1];"
+        "}).join('');"
+      "}).catch(function(){});"
+    "}"
+    "setInterval(pollS,1000);pollS();"
+    /* --- Terminal tab --- */
+    "function pollT(){"
+      "fetch('/term_out')"
+      ".then(function(r){return r.text();})"
+      ".then(function(t){if(t.length){scr.textContent+=t;scr.scrollTop=scr.scrollHeight;}})"
+      ".catch(function(){});"
+    "}"
+    "setInterval(pollT,500);"
+    "inp.addEventListener('keydown',function(e){"
+      "if(e.key==='Enter'){"
+        "fetch('/term_in',{method:'POST',body:inp.value+'\\n'});"
+        "inp.value='';"
+        "e.preventDefault();"
+      "}"
+    "});"
+    "</script></body></html>";
 
-static const char resp_status[] =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Type: application/json\r\n"
-    "Connection: close\r\n"
-    "\r\n"
-    "{\"status\":\"ok\"}";
-
-static const char resp_404_data[] =
-    "HTTP/1.1 404 Not Found\r\n"
-    "Content-Type: text/plain\r\n"
-    "Connection: close\r\n"
-    "\r\n"
-    "Not Found";
-
-// ── Response descriptors ──────────────────────────────────────────────────────
-
-static const http_response_t resp_index_desc  = { resp_index,    sizeof(resp_index)    - 1 };
-static const http_response_t resp_status_desc = { resp_status,   sizeof(resp_status)   - 1 };
-const        http_response_t http_404         = { resp_404_data, sizeof(resp_404_data) - 1 };
-
-// ── Route table ───────────────────────────────────────────────────────────────
-
-static const http_route_t http_routes[] = {
-    { "/",        &resp_index_desc  },
-    { "/status",  &resp_status_desc },
+static const http_response_t resp_index = {
+    index_html_data,
+    sizeof(index_html_data) - 1   /* exclude null terminator */
 };
 
+/* --- GET /status.json --- */
+static char            status_buf[512];
+static http_response_t status_resp;
+
+static const http_response_t *handle_status(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+
+    /* TODO: populate with real values — add fields as needed */
+    char body[256];
+    int blen = snprintf(body, sizeof(body),
+        "{\"uptime_s\":%lu,\"ip\":\"192.168.x.x\"}",
+        HAL_GetTick() / 1000U);
+
+    int hlen = snprintf(status_buf, sizeof(status_buf),
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n", blen);
+    memcpy(status_buf + hlen, body, blen);
+    status_resp.data   = status_buf;
+    status_resp.length = (uint32_t)(hlen + blen);
+    return &status_resp;
+}
+
+/* --- GET /term_out --- */
+#define TERM_OUT_MAX 512U
+static char            term_out_buf[128 + TERM_OUT_MAX];
+static http_response_t term_out_resp;
+
+static const http_response_t *handle_term_out(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+
+    char body[TERM_OUT_MAX];
+    int  blen = 0;
+    while (blen < (int)TERM_OUT_MAX && qbq(emitq) >= 0)
+        body[blen++] = pullbq(emitq);
+
+    int hlen = snprintf(term_out_buf, sizeof(term_out_buf),
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n", blen);
+    memcpy(term_out_buf + hlen, body, blen);
+    term_out_resp.data   = term_out_buf;
+    term_out_resp.length = (uint32_t)(hlen + blen);
+    return &term_out_resp;
+}
+
+/* --- POST /term_in --- */
+static const http_response_t *handle_term_in(const char *req, uint16_t len)
+{
+    /* find \r\n\r\n separating headers from body */
+    const char *body = NULL;
+    for (uint16_t i = 0; i + 3 < len; i++) {
+        if (req[i]=='\r' && req[i+1]=='\n' && req[i+2]=='\r' && req[i+3]=='\n') {
+            body = req + i + 4;
+            break;
+        }
+    }
+    if (body) {
+        int blen = (int)(len - (uint16_t)(body - req));
+        for (int i = 0; i < blen; i++)
+            keyIn((uint8_t)body[i]);
+    }
+    return &http_204;
+}
+
+static const http_route_t http_routes[] = {
+    { "GET",  "/",            &resp_index, NULL            },
+    { "GET",  "/status.json", NULL,        handle_status   },
+    { "GET",  "/term_out",    NULL,        handle_term_out },
+    { "POST", "/term_in",     NULL,        handle_term_in  },
+};
 static const int http_route_count =
     (int)(sizeof(http_routes) / sizeof(http_routes[0]));
 

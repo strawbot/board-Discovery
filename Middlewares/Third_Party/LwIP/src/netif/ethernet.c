@@ -63,13 +63,6 @@
 const struct eth_addr ethbroadcast = {{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}};
 const struct eth_addr ethzero = {{0, 0, 0, 0, 0, 0}};
 
-// debugging viewers
-volatile uint32_t dbg_eth_entry        = 0;  // every call
-volatile uint32_t dbg_eth_ip_entry     = 0;  // reached ETHTYPE_IP case
-volatile uint32_t dbg_eth_noetharp     = 0;  // dropped: NETIF_FLAG_ETHARP not set
-volatile uint32_t dbg_eth_hdr_drop     = 0;  // dropped: pbuf_remove_header failed
-volatile uint32_t dbg_eth_to_ip4       = 0;  // reached ip4_input() call
-
 /**
  * @ingroup lwip_nosys
  * Process received ethernet frames. Using this function instead of directly
@@ -87,8 +80,6 @@ volatile uint32_t dbg_eth_to_ip4       = 0;  // reached ip4_input() call
 err_t
 ethernet_input(struct pbuf *p, struct netif *netif)
 {
-      dbg_eth_entry++;                           // ← ADD
-
   struct eth_hdr *ethhdr;
   u16_t type;
 #if LWIP_ARP || ETHARP_SUPPORT_VLAN || LWIP_IPV6
@@ -180,21 +171,17 @@ ethernet_input(struct pbuf *p, struct netif *netif)
 #if LWIP_IPV4 && LWIP_ARP
     /* IP packet? */
     case PP_HTONS(ETHTYPE_IP):
-      dbg_eth_ip_entry++;                    // ← ADD 
       if (!(netif->flags & NETIF_FLAG_ETHARP)) {
-        dbg_eth_noetharp++;                // ← ADD
         goto free_and_return;
       }
       /* skip Ethernet header (min. size checked above) */
       if (pbuf_remove_header(p, next_hdr_offset)) {
-        dbg_eth_hdr_drop++;                // ← ADDQ
         LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_LEVEL_WARNING,
                     ("ethernet_input: IPv4 packet dropped, too short (%"U16_F"/%"U16_F")\n",
                      p->tot_len, next_hdr_offset));
         LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("Can't move over header in packet"));
         goto free_and_return;
       } else {
-        dbg_eth_to_ip4++;                  // ← ADD
         /* pass to IP layer */
         ip4_input(p, netif);
       }

@@ -26,7 +26,7 @@
 
 #define HTTP_PORT               80
 #define HTTP_MAX_CONNECTIONS    4
-#define HTTP_REQ_BUF_SIZE       256    // enough for GET line + Host header
+#define HTTP_REQ_BUF_SIZE       1024    // enough for GET line + Host header
 #define HTTP_CONN_TIMEOUT_MS    5000   // close idle connections after this long
 #define HTTP_POLL_INTERVAL      5      // tcp_poll interval in 500 ms units (= 2.5 s)
 
@@ -53,15 +53,6 @@ static struct tcp_pcb *listener;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-static http_conn_t *conn_alloc(void) {
-    for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++) {
-        if (conns[i].state == HTTP_IDLE) {
-            return &conns[i];
-        }
-    }
-    return NULL;
-}
-
 static void conn_free(http_conn_t *c) {
     c->pcb         = NULL;
     c->state       = HTTP_IDLE;
@@ -71,39 +62,39 @@ static void conn_free(http_conn_t *c) {
 }
 
 // Close connection cleanly — clear LwIP callbacks first to prevent re-entry.
-static void conn_close(http_conn_t *c) {
-    if (c->pcb == NULL) return;
-    tcp_arg(c->pcb,   NULL);
-    tcp_recv(c->pcb,  NULL);
-    tcp_sent(c->pcb,  NULL);
-    tcp_err(c->pcb,   NULL);
-    tcp_poll(c->pcb,  NULL, 0);
-    tcp_close(c->pcb);
-    conn_free(c);
+static void conn_close(http_conn_t *c)
+{
+    struct tcp_pcb *pcb = c->pcb;
+    tcp_arg(pcb,  NULL);
+    tcp_recv(pcb, NULL);
+    tcp_sent(pcb, NULL);
+    tcp_err(pcb,  NULL);
+    mem_free(c);
+    tcp_close(pcb);
 }
 
 // ── Request parsing ───────────────────────────────────────────────────────────
 // Extracts the URL from "GET /path HTTP/1.x" and looks it up in the route table.
 // Returns a pointer to the matching flash response, or the 404 response.
 
-static const http_response_t *route_request(const char *req, uint16_t len) {
-    // Require at least "GET / HTTP/1.0\r\n"
-    if (len < 16) return &http_404;
+static const http_response_t *route_request(const char *req, uint16_t len)
+{
+    if (len < 14) return &http_404;
 
-    // Only handle GET.
-    if (strncmp(req, "GET ", 4) != 0) return &http_404;
+    const char *p = (const char *)memchr(req, ' ', len);
+    if (!p) return &http_404;
+    uint16_t mlen = (uint16_t)(p - req);
 
-    // Extract URL — between "GET " and the next space.
-    const char *url_start = req + 4;
-    const char *url_end   = memchr(url_start, ' ', len - 4);
-    if (url_end == NULL) return &http_404;
-
-    uint16_t url_len = (uint16_t)(url_end - url_start);
+    const char *url = p + 1;
+    const char *q   = (const char *)memchr(url, ' ', len - mlen - 1);
+    if (!q) return &http_404;
+    uint16_t ulen = (uint16_t)(q - url);
 
     for (int i = 0; i < http_route_count; i++) {
-        if (strlen(http_routes[i].url) == url_len &&
-            strncmp(http_routes[i].url, url_start, url_len) == 0) {
-            return http_routes[i].response;
+        const http_route_t *r = &http_routes[i];
+        if (strlen(r->method) == mlen && strncmp(r->method, req, mlen) == 0 &&
+            strlen(r->url)    == ulen && strncmp(r->url,    url, ulen) == 0) {
+            return r->handler ? r->handler(req, len) : r->response;
         }
     }
     return &http_404;
@@ -116,23 +107,20 @@ static const http_response_t *route_request(const char *req, uint16_t len) {
 static void send_chunk(http_conn_t *c) {
     while (c->tx_remaining > 0) {
         uint16_t space = tcp_sndbuf(c->pcb);
-        if (space == 0) break;                  // TCP send buffer full — wait
+        if (space == 0) break;
 
-        uint16_t chunk = (uint16_t)(c->tx_remaining < space
-                                    ? c->tx_remaining : space);
+        uint16_t chunk = (uint16_t)(c->tx_remaining < space ? c->tx_remaining : space);
+        uint8_t  flags = TCP_WRITE_FLAG_COPY;
+        if (c->tx_remaining > chunk) flags |= TCP_WRITE_FLAG_MORE;
 
-        // TCP_WRITE_FLAG_MORE=1 while more data follows; 0 on last chunk.
-        uint8_t flags = (c->tx_remaining > chunk) ? TCP_WRITE_FLAG_MORE : 0;
-
-        // Content lives in flash — no copy needed (TCP_WRITE_FLAG_COPY=0).
         err_t err = tcp_write(c->pcb, c->tx_ptr, chunk, flags);
-        if (err != ERR_OK) break;               // try again on next tcp_sent()
+        if (err != ERR_OK) break;
 
         c->tx_ptr       += chunk;
         c->tx_remaining -= chunk;
     }
 
-    tcp_output(c->pcb);
+    tcp_output(c->pcb);   /* flush — data is in RAM pbuf, DMA is fine */
 
     if (c->tx_remaining == 0) {
         c->state = HTTP_CLOSING;
@@ -140,9 +128,11 @@ static void send_chunk(http_conn_t *c) {
 }
 
 // ── LwIP callbacks ────────────────────────────────────────────────────────────
+volatile uint32_t dbg_http_recv = 0;
 
 static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                         struct pbuf *p, err_t err) {
+    dbg_http_recv++;
     http_conn_t *c = (http_conn_t *)arg;
 
     if (!p || err != ERR_OK) {
@@ -177,17 +167,26 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
 
     tcp_recved(pcb, p->tot_len);
     pbuf_free(p);
+
+    /* if entire response fit in one send_chunk call, close now */
+    if (c->state == HTTP_CLOSING) {
+        conn_close(c);          /* c is not touched after this */
+    }
+
     return ERR_OK;
 }
 
-static err_t http_sent(void *arg, struct tcp_pcb *pcb, uint16_t len) {
-    (void)len;
+static err_t http_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
+{
+    (void)pcb; (void)len;
     http_conn_t *c = (http_conn_t *)arg;
+    if (!c) return ERR_OK;
 
     if (c->state == HTTP_SENDING) {
-        send_chunk(c);                  // send next chunk now that buffer freed
-    } else if (c->state == HTTP_CLOSING) {
-        conn_close(c);
+        send_chunk(c);          /* room freed → queue more */
+    }
+    if (c->state == HTTP_CLOSING) {
+        conn_close(c);          /* all ACKed → close cleanly */
     }
     return ERR_OK;
 }
@@ -208,16 +207,13 @@ static void http_err(void *arg, err_t err) {
         conn_free(c);
     }
 }
-
 static err_t http_accept(void *arg, struct tcp_pcb *pcb, err_t err) {
     (void)arg;
-    if (err != ERR_OK || pcb == NULL) return ERR_VAL;
-
-    http_conn_t *c = conn_alloc();
-    if (c == NULL) {
-        // No free slots — refuse the connection.
+    if (err != ERR_OK) return err;
+    http_conn_t *c = (http_conn_t *)mem_malloc(sizeof(http_conn_t));
+    if (!c) {
         tcp_abort(pcb);
-        return ERR_ABRT;
+        return ERR_MEM;
     }
 
     c->pcb   = pcb;
