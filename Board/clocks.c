@@ -36,17 +36,28 @@ void micro_sleep() { __WFI(); }
 #define set_pin(pin) LL_GPIO_SetOutputPin(pin##_GPIO_Port, pin##_Pin)
 #define reset_pin(pin) LL_GPIO_ResetOutputPin(pin##_GPIO_Port, pin##_Pin)
 
+#define gron() set_pin(LD4)
+#define groff() reset_pin(LD4)
+#define oron() set_pin(LD3)
+#define oroff() reset_pin(LD3)
+#define blon() set_pin(LD6)
+#define bloff() reset_pin(LD6)
+#define reon() set_pin(LD5)
+#define reoff() reset_pin(LD5)
+
 static void blink_leds() {
-	static enum {ALL, ORANGE, GREEN, RED, BLUE} color = ALL;
+	static enum {GREEN,GREENORANGE,ORANGE,ORANGERED,RED,REDBLUE,BLUE,BLUEGREEN} color = GREEN;
 	switch (color) {
-	case ALL:    set_pin(LD3); set_pin(LD4); set_pin(LD5); set_pin(LD6);  color = GREEN; break;
-	case GREEN:  reset_pin(LD3); reset_pin(LD5); reset_pin(LD6); color = ORANGE; break;
-	case ORANGE:  reset_pin(LD4); set_pin(LD3);  color = RED; break;
-	case RED:    set_pin(LD5); reset_pin(LD3);  color = BLUE; break;
-	case BLUE:   set_pin(LD6);  reset_pin(LD5); color = ALL; break;
+	case GREEN:  		bloff();	color = GREENORANGE; 	break;
+	case GREENORANGE:	oron();		color = ORANGE; 		break;
+	case ORANGE:  		groff();	color = ORANGERED; 		break;
+	case ORANGERED:		reon();		color = RED; 			break;
+	case RED:     		oroff();	color = REDBLUE;		break;
+	case REDBLUE:		blon();		color = BLUE; 			break;
+	case BLUE:   		reoff();	color = BLUEGREEN; 		break;
+	case BLUEGREEN:		gron();		color = GREEN; 			break;
 	}
-	after(secs(1), blink_leds);
-	// later(blink_leds);
+	after(msec(125), blink_leds);
 }
 
 // compare times over an interval: sysTicks();
