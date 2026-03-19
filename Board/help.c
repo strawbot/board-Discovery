@@ -170,6 +170,7 @@ void help(void) {
     printif("s!   ( h a - ) store next into memory using top as address (16 bit)\n");
     printif("s@   ( a - h ) return contents of memory using top stack item as the address (16 bit)\n");
     printif("shift   ( n m - p ) shift n by m bit left for minus and right for positive\n");
+    printif("show-cli   display cli status\n");
     printif("show-eth   show Ethernet link status, speed, duplex and PHY info\n");
     printif("show-http   show HTTP server state and active connections\n");
     printif("show-ip   show IP address, gateway, netmask and DHCP state\n");

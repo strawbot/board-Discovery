@@ -75,17 +75,6 @@ void usart6_tc_irq(void) {
     LL_USART_ClearFlag_TC(USART6);
 }
 
-// ── Single-instance RX action state machine ───────────────────────────────────
-
-// typedef enum {
-//     USART6_IDLE,
-//     USART6_QUEUED,
-//     USART6_RUNNING,
-//     USART6_REQUEUE,
-// } usart6_state_t;
-
-// static volatile usart6_state_t rx_state = USART6_IDLE;
-
 // ── usart6_rx_irq — call from USART6_IRQHandler ───────────────────────────────
 static BQUEUE(100, cliq);
 
@@ -93,19 +82,6 @@ void usart6_rx_irq(void) {
     pushbq(LL_USART_ReceiveData8(USART6), cliq);
     if (qbq(cliq) == 1)
         later(usart6_rx_action);
-
-    // switch (rx_state) {
-    //     case USART6_IDLE:
-    //         rx_state = USART6_QUEUED;
-    //         later(usart6_rx_action);
-    //         break;
-    //     case USART6_RUNNING:
-    //         rx_state = USART6_REQUEUE;
-    //         break;
-    //     case USART6_QUEUED:
-    //     case USART6_REQUEUE:
-    //         break;
-    // }
 }
 
 // ── usart6_rx_action — tea.c action, single-instance ─────────────────────────
@@ -118,23 +94,11 @@ static void usart6_rx_action(void) {
     autoEchoOff();       // RS232 terminal expects device-side echo
 
     while (qbq(cliq))  keyIn(pullbq(cliq));
-    // safe( if (qbq(cliq))  later(usart6_rx_action); )
-    // switch (rx_state) {
-    //     case USART6_REQUEUE:
-    //         // Interrupt fired while we were running — more bytes may have arrived.
-    //         rx_state = USART6_QUEUED;
-    //         later(usart6_rx_action);
-    //         break;
-    //     case USART6_RUNNING:
-    //         rx_state = USART6_IDLE;
-    //         break;
-    //     default:
-    //         break;
-    // }
+    safe( if(qbq(cliq)) later(usart6_rx_action); )
+    // safely interlock the state machine to prevent orphan bytes
 }
 
 // ── usart6_transport_init — call once from board init ────────────────────────
-
 
 void usart6_transport_init(void) {
     // Enable USART6 RXNE interrupt — USART6 peripheral itself is already

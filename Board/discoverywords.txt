@@ -24,6 +24,7 @@ Words // system
 	show-sys		show_sys		// show system info: clock frequencies and uptime
 	show-timer		show_timer		// show delta timer state and UTC tick counter
 	reboot			do_reboot		// reboot the device via NVIC system reset
+	show-cli		show_cli		// display cli status
 End
 
 Include ../../TimbreOS/WordLists/clibindings.txt

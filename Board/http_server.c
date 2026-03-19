@@ -209,6 +209,7 @@ static const http_response_t *route_request(const char *req, uint16_t len)
         const http_route_t *r = &http_routes[i];
         if (strlen(r->method) == mlen && strncmp(r->method, req, mlen) == 0 &&
             strlen(r->url)    == ulen && strncmp(r->url,    url, ulen) == 0) {
+        	// maybeCr(), printDec(len), printAsciiString(req);
             return r->handler ? r->handler(req, len) : r->response;
         }
     }
@@ -268,11 +269,24 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
         }
         c->req_buf[c->req_len] = '\0';
 
-        // Detect end of HTTP request headers (blank line).
-        if (strstr(c->req_buf, "\r\n\r\n") ||
-            strstr(c->req_buf, "\n\n")) {
 
+        const char *hdr_end = strstr(c->req_buf, "\r\n\r\n");
+        if (hdr_end) {
+            uint16_t header_len = (uint16_t)(hdr_end - c->req_buf) + 4;
+
+            /* find Content-Length (POST body size; 0 for GETs) */
+            uint32_t content_length = 0;
+            const char *cl = strstr(c->req_buf, "Content-Length: ");
+            if (cl)
+                content_length = (uint32_t)strtoul(cl + 16, NULL, 10);
+
+            /* wait until headers + body are both in the buffer */
+            if (c->req_len < header_len + content_length)
+                goto done;   /* or just fall through to tcp_recved below */
+
+            /* full request is assembled — now dispatch */
             const http_response_t *resp = route_request(c->req_buf, c->req_len);
+
             if (resp == &sse_sentinel) {
                 // Promote connection to persistent SSE stream.
                 // Evict any existing subscriber first.
@@ -290,7 +304,7 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                 tcp_write(c->pcb, sse_hdr, sizeof(sse_hdr) - 1,
                           TCP_WRITE_FLAG_COPY);
                 tcp_output(c->pcb);
-                when(EmitEvent, http_sse_emit);
+                // when(EmitEvent, http_sse_emit);
             } else {
                 c->tx_ptr       = resp->data;
                 c->tx_remaining = resp->length;
@@ -298,6 +312,7 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                 send_chunk(c);
             }
         }
+    done:;
     }
 
     tcp_recved(pcb, p->tot_len);
@@ -344,24 +359,26 @@ static void http_err(void *arg, err_t err) {
         conn_free(c);
     }
 }
-static err_t http_accept(void *arg, struct tcp_pcb *pcb, err_t err) {
-    (void)arg;
+static err_t http_accept(void *arg, struct tcp_pcb *newpcb, err_t err)
+{
     if (err != ERR_OK) return err;
+
     http_conn_t *c = (http_conn_t *)mem_malloc(sizeof(http_conn_t));
     if (!c) {
-        tcp_abort(pcb);
+        tcp_abort(newpcb);
         return ERR_MEM;
     }
 
-    c->pcb   = pcb;
-    c->state = HTTP_RECEIVING;
+    memset(c, 0, sizeof(http_conn_t));   /* ← clears all stale fields */
 
-    tcp_arg(c->pcb,  c);
-    tcp_recv(c->pcb, http_recv);
-    tcp_sent(c->pcb, http_sent);
-    tcp_err(c->pcb,  http_err);
-    tcp_poll(c->pcb, http_poll, HTTP_POLL_INTERVAL);
-    tcp_setprio(c->pcb, TCP_PRIO_MIN);   // yield to Telnet/other traffic
+    c->pcb   = newpcb;
+    c->state = HTTP_RECEIVING;
+    /* req_len, tx_ptr, tx_remaining are all 0 from memset */
+
+    tcp_arg(newpcb,  c);
+    tcp_recv(newpcb, http_recv);
+    tcp_sent(newpcb, http_sent);
+    tcp_err(newpcb,  http_err);
 
     return ERR_OK;
 }
