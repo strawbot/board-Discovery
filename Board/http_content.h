@@ -82,14 +82,13 @@ static const char index_html_data[] =
     "'<tr><td>'+k+'</td><td>'+v+'</td></tr>').join('');"
     "}).catch(()=>{});},1000);"
 
-    /* terminal output polling */
-    "setInterval(()=>{"
-    "fetch('/term_out').then(r=>r.text()).then(t=>{"
-    "if(!t.length)return;"
+    /* terminal SSE stream — push output from /term_stream */
+    "(function(){"
     "const o=document.getElementById('out');"
-    "o.textContent+=t;"
-    "o.scrollTop=o.scrollHeight;"
-    "}).catch(()=>{});},500);"
+    "const es=new EventSource('/term_stream');"
+    "es.onmessage=function(e){o.textContent+=e.data;o.scrollTop=o.scrollHeight;};"
+    "es.onerror=function(){};"
+    "})();"
 
     /* send command: text + null byte as binary POST */
     "function send(){"

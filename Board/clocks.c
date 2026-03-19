@@ -67,9 +67,8 @@ void init_clocks() {
 	DWT->CYCCNT = 0;
 	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-	// SysTick->CTRL  = 0;                   /* Disable the Systick Timer */
-	// LL_SYSTICK_DisableIT();
-	
+	SysTick->CTRL  = 0;                   /* Disable SysTick — timebase is now TIM5 */
+
 	never(alarmEvent);
 	LL_TIM_SetOnePulseMode(TIM2, LL_TIM_ONEPULSEMODE_SINGLE);
 	LL_TIM_EnableIT_UPDATE(TIM2);

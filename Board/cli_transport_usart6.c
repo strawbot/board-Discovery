@@ -6,18 +6,21 @@
 // Input routing:
 //   Before each keyIn() call, EmitEvent is pointed at usart6_emit so that
 //   output is automatically directed back to RS232.
-//   autoEchoOn() is used — the RS232 terminal expects the device to echo.
+//   autoEchoOff() is used — the RS232 terminal expects the device to echo.
 //
-// TX is polled inside usart6_emit (called as an EmitEvent action).  At
-// 115200 baud each byte takes ~87 µs; typical CLI output is short enough
-// that spinning on TXE is acceptable in the cooperative scheduler.
+// TX is interrupt-driven.  usart6_emit() (the EmitEvent target) enables the
+// TXE interrupt to kick off transmission; usart6_tx_irq() drains emitq one
+// byte per TXE interrupt.  When the queue empties, TXE is disabled and the TC
+// interrupt is armed to detect when the last byte has fully shifted out.
 //
 // RX uses the RXNE interrupt.  The single-instance state machine
 // (IDLE → QUEUED → RUNNING → REQUEUE) prevents queue overflow if bytes
 // arrive faster than the action runs.
 //
-// Required wiring in stm32f4xx_it.c:
-//   void USART6_IRQHandler(void) { usart6_rx_irq(); }
+// Required wiring in stm32f4xx_it.c USART6_IRQHandler:
+//   usart6_rx_irq() — when RXNE flag set and RXNE interrupt enabled
+//   usart6_tx_irq() — when TXE  flag set and TXE  interrupt enabled
+//   usart6_tc_irq() — when TC   flag set and TC   interrupt enabled
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -35,16 +38,41 @@
 
 static void usart6_rx_action(void);
 
-// ── EmitEvent target — drains emitq to USART6 TX (polled) ───────────────────
+// ── EmitEvent target — kicks off interrupt-driven TX ─────────────────────────
+//
+// Called cooperatively from the action queue.  If the TXE interrupt is already
+// running (transmission in progress) the new bytes in emitq will be drained
+// automatically — no action needed.  Otherwise enable TXE to start the ISR
+// drain loop.
 
 static void usart6_emit(void) {
-    while (qbq(emitq)) {
-        uint8_t ch = pullbq(emitq);
-        while (!LL_USART_IsActiveFlag_TXE(USART6)) { }
-        LL_USART_TransmitData8(USART6, ch);
+    if (qbq(emitq))
+        LL_USART_EnableIT_TXE(USART6);
+}
+
+// ── usart6_tx_irq — call from USART6_IRQHandler when TXE flag + IT active ────
+//
+// Sends one byte per interrupt.  When the queue drains: disables TXE and arms
+// TC so we know when the last byte has fully shifted out of the shift register.
+
+void usart6_tx_irq(void) {
+    if (qbq(emitq)) {
+        LL_USART_TransmitData8(USART6, pullbq(emitq));
+    } else {
+        LL_USART_DisableIT_TXE(USART6);
+        LL_USART_EnableIT_TC(USART6);
     }
-    // Wait for the last byte to shift out before returning.
-    while (!LL_USART_IsActiveFlag_TC(USART6)) { }
+}
+
+// ── usart6_tc_irq — call from USART6_IRQHandler when TC flag + IT active ─────
+//
+// Fires once the shift register drains after the last byte.  Disables TC to
+// avoid spurious interrupts; clears the flag so the next transmission starts
+// cleanly.
+
+void usart6_tc_irq(void) {
+    LL_USART_DisableIT_TC(USART6);
+    LL_USART_ClearFlag_TC(USART6);
 }
 
 // ── Single-instance RX action state machine ───────────────────────────────────

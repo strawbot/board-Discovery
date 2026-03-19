@@ -247,7 +247,12 @@ void ETH_WKUP_IRQHandler(void)
 void USART6_IRQHandler(void)
 {
   /* USER CODE BEGIN USART6_IRQn 0 */
-  usart6_rx_irq();
+  if (LL_USART_IsActiveFlag_RXNE(USART6) && LL_USART_IsEnabledIT_RXNE(USART6))
+    usart6_rx_irq();
+  if (LL_USART_IsActiveFlag_TXE(USART6)  && LL_USART_IsEnabledIT_TXE(USART6))
+    usart6_tx_irq();
+  if (LL_USART_IsActiveFlag_TC(USART6)   && LL_USART_IsEnabledIT_TC(USART6))
+    usart6_tc_irq();
   /* USER CODE END USART6_IRQn 0 */
   /* USER CODE BEGIN USART6_IRQn 1 */
 

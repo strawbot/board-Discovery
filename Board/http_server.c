@@ -22,6 +22,46 @@
 #include "http_server.h"
 #include "http_content.h"      // const char[] flash content + route table
 
+// ── Configuration ─────────────────────────────────────────────────────────────
+
+#define HTTP_PORT               80
+#define HTTP_MAX_CONNECTIONS    4
+#define HTTP_REQ_BUF_SIZE       1024    // enough for GET line + Host header
+#define HTTP_CONN_TIMEOUT_MS    5000   // close idle connections after this long
+#define HTTP_POLL_INTERVAL      5      // tcp_poll interval in 500 ms units (= 2.5 s)
+
+// ── Connection state machine ──────────────────────────────────────────────────
+
+typedef enum {
+    HTTP_IDLE,          // slot free
+    HTTP_RECEIVING,     // accumulating request
+    HTTP_SENDING,       // streaming response
+    HTTP_CLOSING,       // draining then closing
+    HTTP_SSE,           // persistent SSE stream — never auto-closed
+} http_state_t;
+
+typedef struct {
+    struct tcp_pcb  *pcb;
+    http_state_t     state;
+    char             req_buf[HTTP_REQ_BUF_SIZE];
+    uint16_t         req_len;
+    const char      *tx_ptr;           // current position in flash response
+    uint32_t         tx_remaining;     // bytes left to send
+} http_conn_t;
+
+static http_conn_t conns[HTTP_MAX_CONNECTIONS];
+static struct tcp_pcb *listener;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+static void conn_free(http_conn_t *c) {
+    c->pcb         = NULL;
+    c->state       = HTTP_IDLE;
+    c->req_len     = 0;
+    c->tx_ptr      = NULL;
+    c->tx_remaining = 0;
+}
+
 /* --- GET /status.json --- */
 static char            status_buf[512];
 static http_response_t status_resp;
@@ -48,30 +88,60 @@ static const http_response_t *handle_status(const char *req, uint16_t len)
     return &status_resp;
 }
 
-/* --- GET /term_out --- */
-#define TERM_OUT_MAX 512U
-static char            term_out_buf[128 + TERM_OUT_MAX];
-static http_response_t term_out_resp;
+/* --- GET /term_stream (Server-Sent Events) --- */
 
-static const http_response_t *handle_term_out(const char *req, uint16_t len)
+// Active SSE subscriber connection.  At most one at a time; a new GET
+// /term_stream evicts and closes any existing one.
+static http_conn_t *sse_conn = NULL;
+
+// Sentinel returned by handle_term_sse() so http_recv() can recognise an SSE
+// request without changing the handler signature.
+static const http_response_t sse_sentinel = { NULL, 0 };
+
+// EmitEvent target: drains emitq into an SSE event frame and writes it to the
+// open /term_stream connection.  Newlines inside the payload are encoded as
+// multiple "data:" fields per the SSE spec so they survive the browser parser.
+// A trailing newline is preserved by appending an empty "data: " field, which
+// prevents the SSE engine from stripping the final LF.
+static void http_sse_emit(void)
+{
+    if (!sse_conn || !sse_conn->pcb) return;
+    if (!qbq(emitq)) return;
+
+    char buf[600];
+    int  pos         = 0;
+    bool last_was_nl = false;
+
+    memcpy(buf, "data: ", 6); pos = 6;
+
+    while (qbq(emitq) && pos < (int)sizeof(buf) - 16) {
+        char ch = (char)pullbq(emitq);
+        if (ch == '\r') continue;               // strip CR from CRLF pairs
+        last_was_nl = (ch == '\n');
+        if (ch == '\n') {
+            buf[pos++] = '\n';
+            if (qbq(emitq))                     // more bytes — extend event
+                memcpy(buf + pos, "data: ", 6), pos += 6;
+        } else {
+            buf[pos++] = ch;
+        }
+    }
+
+    // Preserve trailing newline: extra empty field stops SSE from stripping it.
+    if (last_was_nl)
+        memcpy(buf + pos, "data: \n", 7), pos += 7;
+
+    buf[pos++] = '\n';  // blank line terminates the SSE event
+    buf[pos++] = '\n';
+
+    tcp_write(sse_conn->pcb, buf, (uint16_t)pos, TCP_WRITE_FLAG_COPY);
+    tcp_output(sse_conn->pcb);
+}
+
+static const http_response_t *handle_term_sse(const char *req, uint16_t len)
 {
     (void)req; (void)len;
-
-    char body[TERM_OUT_MAX];
-    int  blen = 0;
-    while (blen < (int)TERM_OUT_MAX && qbq(emitq) >= 0)
-        body[blen++] = pullbq(emitq);
-
-    int hlen = snprintf(term_out_buf, sizeof(term_out_buf),
-        "HTTP/1.0 200 OK\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: %d\r\n"
-        "Connection: close\r\n"
-        "\r\n", blen);
-    memcpy(term_out_buf + hlen, body, blen);
-    term_out_resp.data   = term_out_buf;
-    term_out_resp.length = (uint32_t)(hlen + blen);
-    return &term_out_resp;
+    return &sse_sentinel;   // http_recv() handles connection promotion to SSE
 }
 
 /* --- POST /term_in --- */
@@ -86,6 +156,8 @@ static const http_response_t *handle_term_in(const char *req, uint16_t len)
         }
     }
     if (body) {
+        when(EmitEvent, http_sse_emit);     // direct CLI output to SSE stream
+        autoEchoOff();                      // web terminal handles its own echo
         int blen = (int)(len - (uint16_t)(body - req));
         for (int i = 0; i < blen; i++)
             keyIn((uint8_t)body[i]);
@@ -94,57 +166,19 @@ static const http_response_t *handle_term_in(const char *req, uint16_t len)
 }
 
 static const http_route_t http_routes[] = {
-    { "GET",  "/",            &resp_index, NULL            },
-    { "GET",  "/status.json", NULL,        handle_status   },
-    { "GET",  "/term_out",    NULL,        handle_term_out },
-    { "POST", "/term_in",     NULL,        handle_term_in  },
+    { "GET",  "/",             &resp_index, NULL            },
+    { "GET",  "/status.json",  NULL,        handle_status   },
+    { "GET",  "/term_stream",  NULL,        handle_term_sse },
+    { "POST", "/term_in",      NULL,        handle_term_in  },
 };
 static const int http_route_count =
     (int)(sizeof(http_routes) / sizeof(http_routes[0]));
 
-    
-// ── Configuration ─────────────────────────────────────────────────────────────
-
-#define HTTP_PORT               80
-#define HTTP_MAX_CONNECTIONS    4
-#define HTTP_REQ_BUF_SIZE       1024    // enough for GET line + Host header
-#define HTTP_CONN_TIMEOUT_MS    5000   // close idle connections after this long
-#define HTTP_POLL_INTERVAL      5      // tcp_poll interval in 500 ms units (= 2.5 s)
-
-// ── Connection state machine ──────────────────────────────────────────────────
-
-typedef enum {
-    HTTP_IDLE,          // slot free
-    HTTP_RECEIVING,     // accumulating request
-    HTTP_SENDING,       // streaming response
-    HTTP_CLOSING,       // draining then closing
-} http_state_t;
-
-typedef struct {
-    struct tcp_pcb  *pcb;
-    http_state_t     state;
-    char             req_buf[HTTP_REQ_BUF_SIZE];
-    uint16_t         req_len;
-    const char      *tx_ptr;           // current position in flash response
-    uint32_t         tx_remaining;     // bytes left to send
-} http_conn_t;
-
-static http_conn_t conns[HTTP_MAX_CONNECTIONS];
-static struct tcp_pcb *listener;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-static void conn_free(http_conn_t *c) {
-    c->pcb         = NULL;
-    c->state       = HTTP_IDLE;
-    c->req_len     = 0;
-    c->tx_ptr      = NULL;
-    c->tx_remaining = 0;
-}
 
 // Close connection cleanly — clear LwIP callbacks first to prevent re-entry.
 static void conn_close(http_conn_t *c)
 {
+    if (c == sse_conn) sse_conn = NULL;   // un-register SSE subscriber first
     struct tcp_pcb *pcb = c->pcb;
     tcp_arg(pcb,  NULL);
     tcp_recv(pcb, NULL);
@@ -217,7 +251,7 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
     http_conn_t *c = (http_conn_t *)arg;
 
     if (!p || err != ERR_OK) {
-        // Connection closed by client or error.
+        // Connection closed by client or error (conn_close clears sse_conn).
         conn_close(c);
         return ERR_OK;
     }
@@ -239,10 +273,30 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
             strstr(c->req_buf, "\n\n")) {
 
             const http_response_t *resp = route_request(c->req_buf, c->req_len);
-            c->tx_ptr       = resp->data;
-            c->tx_remaining = resp->length;
-            c->state        = HTTP_SENDING;
-            send_chunk(c);
+            if (resp == &sse_sentinel) {
+                // Promote connection to persistent SSE stream.
+                // Evict any existing subscriber first.
+                if (sse_conn && sse_conn->pcb) conn_close(sse_conn);
+                sse_conn = c;
+                c->state = HTTP_SSE;
+                tcp_poll(c->pcb, NULL, 0);      // disable idle timeout
+
+                static const char sse_hdr[] =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/event-stream\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n";
+                tcp_write(c->pcb, sse_hdr, sizeof(sse_hdr) - 1,
+                          TCP_WRITE_FLAG_COPY);
+                tcp_output(c->pcb);
+                when(EmitEvent, http_sse_emit);
+            } else {
+                c->tx_ptr       = resp->data;
+                c->tx_remaining = resp->length;
+                c->state        = HTTP_SENDING;
+                send_chunk(c);
+            }
         }
     }
 
@@ -273,9 +327,10 @@ static err_t http_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
 }
 
 static err_t http_poll(void *arg, struct tcp_pcb *pcb) {
+    (void)pcb;
     http_conn_t *c = (http_conn_t *)arg;
-    // Connection has been idle too long — close it.
-    if (c) conn_close(c);
+    // SSE connections are persistent — only close idle request/response ones.
+    if (c && c->state != HTTP_SSE) conn_close(c);
     return ERR_OK;
 }
 
@@ -284,6 +339,7 @@ static void http_err(void *arg, err_t err) {
     http_conn_t *c = (http_conn_t *)arg;
     // PCB is already freed by LwIP when err is called — just release our slot.
     if (c) {
+        if (c == sse_conn) sse_conn = NULL;   // un-register before zeroing pcb
         c->pcb = NULL;
         conn_free(c);
     }
@@ -350,6 +406,7 @@ void http_server_stats(uint8_t *active, uint8_t *idle) {
 }
 
 void http_server_stop(void) {
+    sse_conn = NULL;    // cleared before conn_close loop to avoid double-clear
     // Close all active connections.
     for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++) {
         if (conns[i].state != HTTP_IDLE) {
