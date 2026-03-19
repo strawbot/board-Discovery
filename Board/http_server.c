@@ -138,6 +138,18 @@ static void http_sse_emit(void)
     tcp_output(sse_conn->pcb);
 }
 
+// Sends an SSE comment ping to keep the stream alive through proxies/firewalls.
+// Scheduled by the SSE upgrade; reschedules itself while a client is connected.
+// SSE comment lines (": ping\n\n") are invisible to the browser EventSource.
+void http_sse_keepalive(void)
+{
+    if (!sse_conn || !sse_conn->pcb) return;
+    static const char ping[] = ": ping\n\n";
+    tcp_write(sse_conn->pcb, ping, sizeof(ping) - 1, TCP_WRITE_FLAG_COPY);
+    tcp_output(sse_conn->pcb);
+    after(secs(15), http_sse_keepalive);   // reschedule while client is connected
+}
+
 static const http_response_t *handle_term_sse(const char *req, uint16_t len)
 {
     (void)req; (void)len;
@@ -156,7 +168,6 @@ static const http_response_t *handle_term_in(const char *req, uint16_t len)
         }
     }
     if (body) {
-        when(EmitEvent, http_sse_emit);     // direct CLI output to SSE stream
         autoEchoOff();                      // web terminal handles its own echo
         int blen = (int)(len - (uint16_t)(body - req));
         for (int i = 0; i < blen; i++)
@@ -304,7 +315,8 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                 tcp_write(c->pcb, sse_hdr, sizeof(sse_hdr) - 1,
                           TCP_WRITE_FLAG_COPY);
                 tcp_output(c->pcb);
-                // when(EmitEvent, http_sse_emit);
+                when(EmitEvent, http_sse_emit);  // route CLI output to SSE stream
+                after(secs(15), http_sse_keepalive);  // start keepalive ping cycle
             } else {
                 c->tx_ptr       = resp->data;
                 c->tx_remaining = resp->length;
@@ -331,6 +343,8 @@ static err_t http_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
     (void)pcb; (void)len;
     http_conn_t *c = (http_conn_t *)arg;
     if (!c) return ERR_OK;
+
+    if (c->state == HTTP_SSE) return ERR_OK;   // persistent — never close on ACK
 
     if (c->state == HTTP_SENDING) {
         send_chunk(c);          /* room freed → queue more */
