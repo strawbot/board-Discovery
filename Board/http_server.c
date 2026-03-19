@@ -108,13 +108,22 @@ static void http_sse_emit(void)
     if (!sse_conn || !sse_conn->pcb) return;
     if (!qbq(emitq)) return;
 
+    // Guard against a full send buffer.  If tcp_write() were called with no
+    // room, it would silently fail and bytes already pulled from emitq would
+    // be permanently lost.  Leave everything in emitq; http_sent() will call
+    // us again once ACKs free up space.  Reserve 16 bytes for SSE framing.
+    u16_t room = tcp_sndbuf(sse_conn->pcb);
+    if (room < 32) return;
+
     char buf[600];
     int  pos         = 0;
     bool last_was_nl = false;
+    // Drain no more than what the send buffer can absorb right now.
+    int  limit       = (room < (u16_t)sizeof(buf)) ? (int)room : (int)sizeof(buf);
 
     memcpy(buf, "data: ", 6); pos = 6;
 
-    while (qbq(emitq) && pos < (int)sizeof(buf) - 16) {
+    while (qbq(emitq) && pos < limit - 16) {
         char ch = (char)pullbq(emitq);
         if (ch == '\r') continue;               // strip CR from CRLF pairs
         last_was_nl = (ch == '\n');
@@ -136,6 +145,7 @@ static void http_sse_emit(void)
 
     tcp_write(sse_conn->pcb, buf, (uint16_t)pos, TCP_WRITE_FLAG_COPY);
     tcp_output(sse_conn->pcb);
+    // Any remaining emitq data will be flushed from http_sent() once ACKs arrive.
 }
 
 // Sends an SSE comment ping to keep the stream alive through proxies/firewalls.
@@ -344,7 +354,10 @@ static err_t http_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
     http_conn_t *c = (http_conn_t *)arg;
     if (!c) return ERR_OK;
 
-    if (c->state == HTTP_SSE) return ERR_OK;   // persistent — never close on ACK
+    if (c->state == HTTP_SSE) {
+        http_sse_emit();    // ACKs freed buffer space — flush any queued emitq data
+        return ERR_OK;
+    }
 
     if (c->state == HTTP_SENDING) {
         send_chunk(c);          /* room freed → queue more */
