@@ -168,7 +168,8 @@ static const http_response_t *handle_term_in(const char *req, uint16_t len)
         }
     }
     if (body) {
-        autoEchoOff();                      // web terminal handles its own echo
+        autoEchoOn();                      // web terminal handles its own echo
+        when(EmitEvent, http_sse_emit);  // route CLI output to SSE stream
         int blen = (int)(len - (uint16_t)(body - req));
         for (int i = 0; i < blen; i++)
             keyIn((uint8_t)body[i]);
@@ -315,7 +316,6 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                 tcp_write(c->pcb, sse_hdr, sizeof(sse_hdr) - 1,
                           TCP_WRITE_FLAG_COPY);
                 tcp_output(c->pcb);
-                when(EmitEvent, http_sse_emit);  // route CLI output to SSE stream
                 after(secs(15), http_sse_keepalive);  // start keepalive ping cycle
             } else {
                 c->tx_ptr       = resp->data;

@@ -96,7 +96,7 @@ static const char index_html_data[] =
     "const txt=el.value;el.value='';"
     "const enc=new TextEncoder().encode(txt);"
     "const buf=new Uint8Array(enc.length+1);"
-    "buf.set(enc);buf[enc.length]=0;"
+    "buf.set(enc);buf[enc.length]=0xD;"
     "fetch('/term_in',{method:'POST',body:buf}).catch(()=>{});}"
 
     "document.getElementById('inp')"
