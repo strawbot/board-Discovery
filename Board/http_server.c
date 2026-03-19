@@ -22,6 +22,87 @@
 #include "http_server.h"
 #include "http_content.h"      // const char[] flash content + route table
 
+/* --- GET /status.json --- */
+static char            status_buf[512];
+static http_response_t status_resp;
+
+static const http_response_t *handle_status(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+
+    /* TODO: populate with real values — add fields as needed */
+    char body[256];
+    int blen = snprintf(body, sizeof(body),
+        "{\"uptime_s\":%lu,\"ip\":\"192.168.x.x\"}",
+        HAL_GetTick() / 1000U);
+
+    int hlen = snprintf(status_buf, sizeof(status_buf),
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n", blen);
+    memcpy(status_buf + hlen, body, blen);
+    status_resp.data   = status_buf;
+    status_resp.length = (uint32_t)(hlen + blen);
+    return &status_resp;
+}
+
+/* --- GET /term_out --- */
+#define TERM_OUT_MAX 512U
+static char            term_out_buf[128 + TERM_OUT_MAX];
+static http_response_t term_out_resp;
+
+static const http_response_t *handle_term_out(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+
+    char body[TERM_OUT_MAX];
+    int  blen = 0;
+    while (blen < (int)TERM_OUT_MAX && qbq(emitq) >= 0)
+        body[blen++] = pullbq(emitq);
+
+    int hlen = snprintf(term_out_buf, sizeof(term_out_buf),
+        "HTTP/1.0 200 OK\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n"
+        "\r\n", blen);
+    memcpy(term_out_buf + hlen, body, blen);
+    term_out_resp.data   = term_out_buf;
+    term_out_resp.length = (uint32_t)(hlen + blen);
+    return &term_out_resp;
+}
+
+/* --- POST /term_in --- */
+static const http_response_t *handle_term_in(const char *req, uint16_t len)
+{
+    /* find \r\n\r\n separating headers from body */
+    const char *body = NULL;
+    for (uint16_t i = 0; i + 3 < len; i++) {
+        if (req[i]=='\r' && req[i+1]=='\n' && req[i+2]=='\r' && req[i+3]=='\n') {
+            body = req + i + 4;
+            break;
+        }
+    }
+    if (body) {
+        int blen = (int)(len - (uint16_t)(body - req));
+        for (int i = 0; i < blen; i++)
+            keyIn((uint8_t)body[i]);
+    }
+    return &http_204;
+}
+
+static const http_route_t http_routes[] = {
+    { "GET",  "/",            &resp_index, NULL            },
+    { "GET",  "/status.json", NULL,        handle_status   },
+    { "GET",  "/term_out",    NULL,        handle_term_out },
+    { "POST", "/term_in",     NULL,        handle_term_in  },
+};
+static const int http_route_count =
+    (int)(sizeof(http_routes) / sizeof(http_routes[0]));
+
+    
 // ── Configuration ─────────────────────────────────────────────────────────────
 
 #define HTTP_PORT               80

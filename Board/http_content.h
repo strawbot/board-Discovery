@@ -36,149 +36,77 @@ static const char index_html_data[] =
     "Content-Type: text/html\r\n"
     "Connection: close\r\n"
     "\r\n"
-    "<!DOCTYPE html><html><head><meta charset=utf-8><title>STM32</title><style>"
-    "*{box-sizing:border-box}body{margin:0;font:13px monospace;background:#1a1a1a;color:#ccc}"
-    ".nav{display:flex;background:#111;border-bottom:1px solid #333}"
-    ".nav button{padding:8px 18px;background:none;border:none;color:#888;"
-                "cursor:pointer;font:inherit}"
-    ".nav button.on{color:#fff;border-bottom:2px solid #4af}"
-    ".pg{display:none;padding:12px}.pg.on{display:block}"
-    "table{width:100%;border-collapse:collapse}"
-    "td{padding:4px 8px;border-bottom:1px solid #2a2a2a}"
-    "td:first-child{color:#88f;width:45%}"
-    "#scr{background:#000;color:#0f0;height:400px;overflow-y:auto;"
-         "padding:8px;white-space:pre-wrap;word-break:break-all}"
-    "#inp{display:block;width:100%;margin-top:4px;padding:6px;"
-         "background:#111;color:#0f0;border:1px solid #333;font:inherit;outline:none}"
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>STM32</title>"
+    "<style>"
+    "body{font-family:monospace;background:#111;color:#ccc;margin:0;padding:0}"
+    ".tabs{display:flex;background:#222}"
+    ".tab{padding:8px 18px;background:#333;color:#999;border:none;cursor:pointer;font-size:14px}"
+    ".tab.on{background:#111;color:#0f0}"
+    ".page{display:none;padding:10px}"
+    ".page.on{display:block}"
+    "table{border-collapse:collapse;width:100%}"
+    "td{border:1px solid #444;padding:5px 8px}"
+    "#out{background:#000;color:#0f0;height:380px;padding:8px;"
+         "overflow-y:auto;white-space:pre-wrap;word-break:break-all;"
+         "font-size:13px;border:1px solid #333}"
+    "#irow{display:flex;margin-top:6px;gap:4px}"
+    "#inp{flex:1;background:#000;color:#0f0;border:1px solid #444;"
+         "padding:4px 6px;font-family:monospace;font-size:13px}"
+    "#btn{background:#333;color:#0f0;border:1px solid #444;padding:4px 12px;cursor:pointer}"
     "</style></head><body>"
-    "<div class=nav>"
-    "<button class=on id=b0 onclick=sw(0)>Status</button>"
-    "<button id=b1 onclick=sw(1)>Terminal</button>"
+    "<div class=\"tabs\">"
+    "<button class=\"tab on\" onclick=\"sw('st',this)\">Active Robot</button>"
+    "<button class=\"tab\" onclick=\"sw('tm',this)\">Terminal</button>"
     "</div>"
-    "<div class='pg on' id=p0><table id=tbl></table></div>"
-    "<div class=pg id=p1><div id=scr></div>"
-    "<input id=inp placeholder='Enter command...'></div>"
+    "<div id=\"st\" class=\"page on\">"
+    "<table><tbody id=\"sb\"></tbody></table>"
+    "</div>"
+    "<div id=\"tm\" class=\"page\">"
+    "<div id=\"out\"></div>"
+    "<div id=\"irow\">"
+    "<input id=\"inp\" type=\"text\" autocomplete=\"off\" autocorrect=\"off\""
+    " autocapitalize=\"none\" spellcheck=\"false\" placeholder=\"command...\">"
+    "<button id=\"btn\" onclick=\"send()\">Send</button>"
+    "</div></div>"
     "<script>"
-    "var scr=document.getElementById('scr'),"
-        "inp=document.getElementById('inp');"
-    "function sw(n){"
-      "[0,1].forEach(function(i){"
-        "document.getElementById('p'+i).className='pg'+(i==n?' on':'');"
-        "document.getElementById('b'+i).className=i==n?'on':'';"
-      "});"
-    "}"
-    /* --- Status tab --- */
-    "function pollS(){"
-      "fetch('/status.json')"
-      ".then(function(r){return r.json();})"
-      ".then(function(d){"
-        "document.getElementById('tbl').innerHTML="
-        "Object.entries(d).map(function(e){"
-          "return '<tr><td>'+e[0]+'<td>'+e[1];"
-        "}).join('');"
-      "}).catch(function(){});"
-    "}"
-    "setInterval(pollS,1000);pollS();"
-    /* --- Terminal tab --- */
-    "function pollT(){"
-      "fetch('/term_out')"
-      ".then(function(r){return r.text();})"
-      ".then(function(t){if(t.length){scr.textContent+=t;scr.scrollTop=scr.scrollHeight;}})"
-      ".catch(function(){});"
-    "}"
-    "setInterval(pollT,500);"
-    "inp.addEventListener('keydown',function(e){"
-      "if(e.key==='Enter'){"
-        "fetch('/term_in',{method:'POST',body:inp.value+'\\n'});"
-        "inp.value='';"
-        "e.preventDefault();"
-      "}"
-    "});"
+    "function sw(id,el){"
+    "document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));"
+    "document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));"
+    "document.getElementById(id).classList.add('on');el.classList.add('on');}"
+
+    /* status polling */
+    "setInterval(()=>{"
+    "fetch('/status.json').then(r=>r.json()).then(d=>{"
+    "document.getElementById('sb').innerHTML="
+    "Object.entries(d).map(([k,v])=>"
+    "'<tr><td>'+k+'</td><td>'+v+'</td></tr>').join('');"
+    "}).catch(()=>{});},1000);"
+
+    /* terminal output polling */
+    "setInterval(()=>{"
+    "fetch('/term_out').then(r=>r.text()).then(t=>{"
+    "if(!t.length)return;"
+    "const o=document.getElementById('out');"
+    "o.textContent+=t;"
+    "o.scrollTop=o.scrollHeight;"
+    "}).catch(()=>{});},500);"
+
+    /* send command: text + null byte as binary POST */
+    "function send(){"
+    "const el=document.getElementById('inp');"
+    "const txt=el.value;el.value='';"
+    "const enc=new TextEncoder().encode(txt);"
+    "const buf=new Uint8Array(enc.length+1);"
+    "buf.set(enc);buf[enc.length]=0;"
+    "fetch('/term_in',{method:'POST',body:buf}).catch(()=>{});}"
+
+    "document.getElementById('inp')"
+    ".addEventListener('keydown',e=>{if(e.key==='Enter')send();});"
     "</script></body></html>";
 
 static const http_response_t resp_index = {
     index_html_data,
     sizeof(index_html_data) - 1   /* exclude null terminator */
 };
-
-/* --- GET /status.json --- */
-static char            status_buf[512];
-static http_response_t status_resp;
-
-static const http_response_t *handle_status(const char *req, uint16_t len)
-{
-    (void)req; (void)len;
-
-    /* TODO: populate with real values — add fields as needed */
-    char body[256];
-    int blen = snprintf(body, sizeof(body),
-        "{\"uptime_s\":%lu,\"ip\":\"192.168.x.x\"}",
-        HAL_GetTick() / 1000U);
-
-    int hlen = snprintf(status_buf, sizeof(status_buf),
-        "HTTP/1.0 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %d\r\n"
-        "Connection: close\r\n"
-        "\r\n", blen);
-    memcpy(status_buf + hlen, body, blen);
-    status_resp.data   = status_buf;
-    status_resp.length = (uint32_t)(hlen + blen);
-    return &status_resp;
-}
-
-/* --- GET /term_out --- */
-#define TERM_OUT_MAX 512U
-static char            term_out_buf[128 + TERM_OUT_MAX];
-static http_response_t term_out_resp;
-
-static const http_response_t *handle_term_out(const char *req, uint16_t len)
-{
-    (void)req; (void)len;
-
-    char body[TERM_OUT_MAX];
-    int  blen = 0;
-    while (blen < (int)TERM_OUT_MAX && qbq(emitq) >= 0)
-        body[blen++] = pullbq(emitq);
-
-    int hlen = snprintf(term_out_buf, sizeof(term_out_buf),
-        "HTTP/1.0 200 OK\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: %d\r\n"
-        "Connection: close\r\n"
-        "\r\n", blen);
-    memcpy(term_out_buf + hlen, body, blen);
-    term_out_resp.data   = term_out_buf;
-    term_out_resp.length = (uint32_t)(hlen + blen);
-    return &term_out_resp;
-}
-
-/* --- POST /term_in --- */
-static const http_response_t *handle_term_in(const char *req, uint16_t len)
-{
-    /* find \r\n\r\n separating headers from body */
-    const char *body = NULL;
-    for (uint16_t i = 0; i + 3 < len; i++) {
-        if (req[i]=='\r' && req[i+1]=='\n' && req[i+2]=='\r' && req[i+3]=='\n') {
-            body = req + i + 4;
-            break;
-        }
-    }
-    if (body) {
-        int blen = (int)(len - (uint16_t)(body - req));
-        for (int i = 0; i < blen; i++)
-            keyIn((uint8_t)body[i]);
-    }
-    return &http_204;
-}
-
-static const http_route_t http_routes[] = {
-    { "GET",  "/",            &resp_index, NULL            },
-    { "GET",  "/status.json", NULL,        handle_status   },
-    { "GET",  "/term_out",    NULL,        handle_term_out },
-    { "POST", "/term_in",     NULL,        handle_term_in  },
-};
-static const int http_route_count =
-    (int)(sizeof(http_routes) / sizeof(http_routes[0]));
 
 #endif // HTTP_CONTENT_H
