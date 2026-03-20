@@ -368,14 +368,6 @@ static err_t http_sent(void *arg, struct tcp_pcb *pcb, u16_t len)
     return ERR_OK;
 }
 
-static err_t http_poll(void *arg, struct tcp_pcb *pcb) {
-    (void)pcb;
-    http_conn_t *c = (http_conn_t *)arg;
-    // SSE connections are persistent — only close idle request/response ones.
-    if (c && c->state != HTTP_SSE) conn_close(c);
-    return ERR_OK;
-}
-
 static void http_err(void *arg, err_t err) {
     (void)err;
     http_conn_t *c = (http_conn_t *)arg;

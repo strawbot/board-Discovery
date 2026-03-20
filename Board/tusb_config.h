@@ -35,12 +35,19 @@
 #define CFG_TUD_DFU                 0
 #define CFG_TUD_BTH                 0
 #define CFG_TUD_ECM_RNDIS           0
-#define CFG_TUD_NCM                 0
+#define CFG_TUD_NCM                 1       // CDC NCM for USB network (192.168.7.1/24)
 
 // ── CDC configuration ─────────────────────────────────────────────────────────
 
 #define CFG_TUD_CDC_RX_BUFSIZE      256     // RX FIFO — characters from host
 #define CFG_TUD_CDC_TX_BUFSIZE      256     // TX FIFO — characters to host
 #define CFG_TUD_CDC_EP_BUFSIZE      64      // USB packet size
+
+// ── NCM configuration ─────────────────────────────────────────────────────────
+// NTB (Network Transfer Block) buffers — keep small to fit in STM32F407 SRAM.
+// 2 KB is enough for one full 1514-byte Ethernet frame plus NTB header overhead.
+
+#define CFG_TUD_NCM_IN_NTB_MAX_SIZE     2048
+#define CFG_TUD_NCM_OUT_NTB_MAX_SIZE    2048
 
 #endif // TUSB_CONFIG_H

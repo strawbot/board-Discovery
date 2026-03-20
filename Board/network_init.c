@@ -19,6 +19,7 @@
 #include "ethernetif.h"
 #include "http_server.h"
 #include "telnet_server.h"
+#include "usb_net.h"
 
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
@@ -221,5 +222,22 @@ void network_init(void) {
     http_server_init();
     telnet_server_init();
     namedAction(lwip_timeout_action);
+
+    // USB network interface — static 192.168.7.1/24, always up.
+    // HTTP and Telnet are reachable at 192.168.7.1 once the host assigns
+    // itself an address on the 192.168.7.0/24 subnet.
+    usb_netif_init();
+
+    // Unconditionally kick the LwIP timer chain here.
+    //
+    // Without this, lwip_timeout_action only starts when the Ethernet PHY
+    // signals link-up (eth_link_action → netif_set_link_up → link_callback →
+    // kick_lwip_timer).  If Ethernet is absent — e.g. USB-only operation —
+    // sys_check_timeouts() never runs.  The immediate consequence is that
+    // LwIP's TCP delayed-ACK timer never fires: the board queues ACKs that
+    // are never sent, causing the remote side to retransmit endlessly and
+    // curl / browser connections to hang until timeout.
+    kick_lwip_timer();
+
     print("NET: init done\r\n");
 }

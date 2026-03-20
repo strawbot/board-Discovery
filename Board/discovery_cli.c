@@ -20,6 +20,7 @@
 #include "netif/ethernet.h"
 
 #include "tusb.h"
+#include "usb_net.h"
 
 #include "ethernetif.h"
 #include "http_server.h"
@@ -391,8 +392,37 @@ void show_telnet(void) {
 // ── USB ───────────────────────────────────────────────────────────────────────
 
 void show_usb(void) {
-    print("USB mounted:   "); print(tud_mounted()      ? "yes" : "no");  printCr();
-    print("CDC connected: "); print(tud_cdc_connected() ? "yes" : "no"); printCr();
+    // ── USB device layer ──────────────────────────────────────────────────────
+    bool connected  = tud_connected();
+    bool mounted    = tud_mounted();
+    bool suspended  = tud_suspended();
+
+    print("USB device:    ");
+    if (!connected)       print("disconnected");
+    else if (suspended)   print("suspended");
+    else if (mounted)     print("mounted (configured)");
+    else                  print("connected (enumerating)");
+    printCr();
+
+    // ── CDC ACM — serial terminal ─────────────────────────────────────────────
+    print("CDC serial:    ");
+    if (!mounted)                   print("n/a");
+    else if (tud_cdc_connected())   print("terminal open");
+    else                            print("no terminal");
+    printCr();
+
+    // ── CDC NCM — USB network interface ──────────────────────────────────────
+    print("NCM netif:     ");
+    if (!mounted) {
+        print("n/a");
+    } else if (netif_is_up(&usb_netif)) {
+        print("up  ");
+        print(ip4addr_ntoa(netif_ip4_addr(&usb_netif)));
+        if (!netif_is_link_up(&usb_netif)) print(" (link down)");
+    } else {
+        print("down");
+    }
+    printCr();
 }
 
 // ── System ────────────────────────────────────────────────────────────────────
