@@ -21,11 +21,13 @@
 #include "lwip.h"
 #include "tim.h"
 #include "usart.h"
+#include "usb_otg.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "cli_transport_usart6.h"
+#include "usb_init.h"
 #include "tea.h"
 /* USER CODE END Includes */
 
@@ -95,12 +97,14 @@ int main(void)
   MX_TIM2_Init();
   MX_USART6_UART_Init();
   MX_TIM5_Init();
+  MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
 void init_tea();
 void init_cli();
-  usart6_transport_init();
   init_tea();
   init_cli();
+  usart6_transport_init();
+  cdc_transport_init();
   void network_init(void);
   later(network_init);
   /* USER CODE END 2 */
@@ -137,6 +141,7 @@ void SystemClock_Config(void)
 
   }
   LL_RCC_PLL_ConfigDomain_SYS(LL_RCC_PLLSOURCE_HSE, LL_RCC_PLLM_DIV_8, 336, LL_RCC_PLLP_DIV_2);
+  LL_RCC_PLL_ConfigDomain_48M(LL_RCC_PLLSOURCE_HSE, LL_RCC_PLLM_DIV_8, 336, LL_RCC_PLLQ_DIV_7);
   LL_RCC_PLL_Enable();
 
    /* Wait till PLL is ready */

@@ -90,17 +90,25 @@ static const char index_html_data[] =
     "es.onerror=function(){};"
     "})();"
 
-    /* send command: text + null byte as binary POST */
+    /* command history (up/down arrows) + send (Enter or button) */
+    "var hist=[],histIdx=0;"
     "function send(){"
     "const el=document.getElementById('inp');"
     "const txt=el.value;el.value='';"
+    "if(txt){hist.push(txt);histIdx=hist.length;}"
     "const enc=new TextEncoder().encode(txt);"
     "const buf=new Uint8Array(enc.length+1);"
     "buf.set(enc);buf[enc.length]=0xD;"
     "fetch('/term_in',{method:'POST',body:buf}).catch(()=>{});}"
 
     "document.getElementById('inp')"
-    ".addEventListener('keydown',e=>{if(e.key==='Enter')send();});"
+    ".addEventListener('keydown',e=>{"
+    "if(e.key==='Enter'){send();}"
+    "else if(e.key==='ArrowUp'){e.preventDefault();"
+    "if(histIdx>0){histIdx--;e.target.value=hist[histIdx];}}"
+    "else if(e.key==='ArrowDown'){e.preventDefault();"
+    "if(histIdx<hist.length-1){histIdx++;e.target.value=hist[histIdx];}"
+    "else{histIdx=hist.length;e.target.value='';}}});"
     "</script></body></html>";
 
 static const http_response_t resp_index = {

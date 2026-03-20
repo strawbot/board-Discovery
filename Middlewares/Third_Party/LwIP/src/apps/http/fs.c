@@ -38,9 +38,6 @@
 
 #include HTTPD_FSDATA_FILE
 
-volatile uint32_t dbg_fs_open_hit = 0;
-volatile uint32_t dbg_fs_open_iter = 0;
-
 /*-----------------------------------------------------------------------------------*/
 
 #if LWIP_HTTPD_CUSTOM_FILES
@@ -75,8 +72,6 @@ fs_open(struct fs_file *file, const char *name)
 
   for (f = FS_ROOT; f != NULL; f = f->next) {
     if (!strcmp(name, (const char *)f->name)) {
-      dbg_fs_open_iter++;          // <-- add this
-      dbg_fs_open_hit++;
       file->data = (const char *)f->data;
       file->len = f->len;
       file->index = f->len;

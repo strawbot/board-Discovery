@@ -9,6 +9,15 @@
 // TinyUSB drives the USB stack via usb_action in the tea.c action queue.
 // cdc_rx_action is posted by the TinyUSB CDC RX callback and drains the
 // CDC RX FIFO into keyIn().
+//
+// TX backpressure:
+//   cdc_emit checks tud_cdc_write_available() before pulling from emitq so
+//   no byte is ever lost.  When the TinyUSB TX FIFO is full, cdc_emit queues
+//   cdc_emit_action exactly once (guarded by emit_retry_pending) and returns.
+//   usb_action runs first (it is always ahead in the queue), calls tud_task()
+//   which flushes the FIFO to USB, then cdc_emit_action resumes the drain.
+//   Without the gate a long response would push one later() per EmitEvent
+//   fire, overflowing the action queue and triggering system_failure.
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -20,24 +29,45 @@
 
 #include "tusb.h"
 
-// ── Forward declaration ───────────────────────────────────────────────────────
+// ── Forward declarations ──────────────────────────────────────────────────────
 
 void cdc_rx_action(void);
+void cdc_emit_action(void);     // non-static — must be addressable by later()
+
+// ── TX retry gate ─────────────────────────────────────────────────────────────
+//
+// Cleared by cdc_emit_action when it runs.  Prevents cdc_emit from pushing
+// more than one pending retry into the action queue regardless of how many
+// times EmitEvent fires while the TinyUSB TX FIFO is backed up.
+
+static bool emit_retry_pending = false;
 
 // ── EmitEvent target — drains emitq to USB CDC TX ────────────────────────────
 
 static void cdc_emit(void) {
     while (qbq(emitq)) {
-        uint8_t ch = pullbq(emitq);
-        // tud_cdc_write returns bytes written — retry if buffer full.
-        while (tud_cdc_write(&ch, 1) == 0) {
-            // CDC TX buffer full — flush what we have and yield to usb_action.
+        if (tud_cdc_write_available() == 0) {
+            // TX FIFO full — flush what is staged and yield.
+            // Queue a single retry; usb_action will run first and drain
+            // the FIFO to USB before cdc_emit_action resumes here.
             tud_cdc_write_flush();
-            later(cdc_rx_action);   // requeue ourselves; usb_action will run first
-            return;                 // remaining emitq bytes sent on next pass
+            if (!emit_retry_pending) {
+                emit_retry_pending = true;
+                later(cdc_emit_action);
+            }
+            return;
         }
+        uint8_t ch = pullbq(emitq);
+        tud_cdc_write(&ch, 1);
     }
     tud_cdc_write_flush();
+}
+
+// ── cdc_emit_action — scheduled by cdc_emit when TX FIFO was full ─────────────
+
+void cdc_emit_action(void) {
+    emit_retry_pending = false;
+    cdc_emit();
 }
 
 // ── cdc_rx_action — posted by TinyUSB CDC RX callback ────────────────────────
@@ -71,9 +101,13 @@ void tud_cdc_rx_cb(uint8_t itf) {
     later(cdc_rx_action);
 }
 
-// TX complete — nothing needed; cdc_emit drives all TX.
+// TX FIFO drained to USB — if we have more to send, resume the drain.
 void tud_cdc_tx_complete_cb(uint8_t itf) {
     (void)itf;
+    if (qbq(emitq) && !emit_retry_pending) {
+        emit_retry_pending = true;
+        later(cdc_emit_action);
+    }
 }
 
 // Connection state change — print prompt on connect.
