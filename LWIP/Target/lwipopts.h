@@ -62,9 +62,9 @@
 /*----- Default Value for MEMP_NUM_TCP_PCB_LISTEN: 8 ---*/
 #define MEMP_NUM_TCP_PCB_LISTEN 2
 /*----- Value in opt.h for MEMP_NUM_SYS_TIMEOUT: (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_AUTOIP + LWIP_IGMP + LWIP_DNS + (PPP_SUPPORT*6*MEMP_NUM_PPP_PCB) + (LWIP_IPV6 ? (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD) : 0)) -*/
-/* Increased from 5: two netifs (Ethernet + USB) each register ARP/DHCP timers;
-   extra headroom prevents sys_timeout pool exhaustion at runtime.            */
-#define MEMP_NUM_SYS_TIMEOUT 8
+/* Increased: two netifs (Ethernet + USB) each register ARP timers; DHCP on Ethernet
+   registers 2; DNS adds 1; SNTP adds 1; extra headroom for TCP connections.  */
+#define MEMP_NUM_SYS_TIMEOUT 14
 /*----- Value in opt.h for LWIP_ETHERNET: LWIP_ARP || PPPOE_SUPPORT -*/
 #define LWIP_ETHERNET 1
 /*----- Value in opt.h for LWIP_DNS_SECURE: (LWIP_DNS_SECURE_RAND_XID | LWIP_DNS_SECURE_NO_MULTIPLE_OUTSTANDING | LWIP_DNS_SECURE_RAND_SRC_PORT) -*/
@@ -139,6 +139,21 @@
  /* Suppress LwIP format-string diagnostics (no printf/semihosting on this target). */
  /* LWIP_PLATFORM_ASSERT is handled in Board/arch/cc.h (the include-path shim).    */
  #define LWIP_PLATFORM_DIAG(x)   do {} while(0)
+
+/* ---------- DNS ------------------------------------------------------------ */
+/* Required by SNTP to resolve "pool.ntp.org" and "time.cloudflare.com".
+ * dns.c is already included in the core build (core/subdir.mk).               */
+#define LWIP_DNS                 1
+
+/* ---------- SNTP ----------------------------------------------------------- */
+/* Allow NTP server addresses to be set as DNS hostnames.                      */
+#define SNTP_SERVER_DNS          1
+
+/* Hook invoked by sntp.c each time a valid NTP response is received.
+ * ntp_set_utc_seconds() is defined in Board/ntp_sync.c.                       */
+#define SNTP_SET_SYSTEM_TIME(sec) \
+    do { extern void ntp_set_utc_seconds(uint32_t); \
+         ntp_set_utc_seconds(sec); } while(0)
 /* USER CODE END 1 */
 
 #ifdef __cplusplus

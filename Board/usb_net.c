@@ -9,6 +9,15 @@
 // on 192.168.7.0/24 (e.g. 192.168.7.2) and the HTTP and Telnet servers are
 // reachable at 192.168.7.1:80 and 192.168.7.1:23.
 //
+// Internet routing via USB
+// ────────────────────────
+// The USB gateway is set to 192.168.7.2 (the first address assigned by the
+// on-board DHCP server to the USB host).  If the host has IP forwarding
+// enabled (e.g. macOS Internet Sharing, Linux ip_forward=1), LwIP will route
+// internet-bound packets — including NTP/DNS — through the USB host.
+// If the host does not forward, those packets are silently dropped and the
+// Ethernet interface (when connected) handles internet traffic instead.
+//
 // TinyUSB NCM callbacks (called from tud_task() inside usb_action):
 //   tud_network_init_cb()    — USB host reset / re-enumeration
 //   tud_network_recv_cb()    — frame received from host → LwIP input
@@ -53,7 +62,7 @@
 #define USB_GW0    192
 #define USB_GW1    168
 #define USB_GW2      7
-#define USB_GW3      1
+#define USB_GW3      2  // host address assigned by usb_dhcpd; forwards internet if enabled
 
 #define USB_MASK0  255
 #define USB_MASK1  255

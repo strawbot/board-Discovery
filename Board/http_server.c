@@ -21,6 +21,7 @@
 
 #include "http_server.h"
 #include "http_content.h"      // const char[] flash content + route table
+#include "ntp_sync.h"          // ntp_get_utc(), ntp_is_synced()
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -62,6 +63,47 @@ static void conn_free(http_conn_t *c) {
     c->tx_remaining = 0;
 }
 
+/* --- UTC epoch → "YYYY-MM-DD HH:MM:SS UTC" formatter ---------------------- */
+//
+// Self-contained: no gmtime(), no libc dependency.
+// Handles dates from 1970-01-01 through 2105-12-31 (uint32_t epoch range).
+
+static void epoch_to_utc_str(uint32_t epoch, char *buf, int bufsize)
+{
+    uint32_t s   = epoch % 60; epoch /= 60;
+    uint32_t min = epoch % 60; epoch /= 60;
+    uint32_t h   = epoch % 24; epoch /= 24;
+
+    // Count full years from 1970 using days remaining.
+    uint32_t days = epoch;
+    uint32_t year = 1970;
+    for (;;) {
+        bool leap = (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+        uint32_t diy = leap ? 366u : 365u;
+        if (days < diy) break;
+        days -= diy;
+        year++;
+    }
+
+    // Count full months within the year.
+    static const uint8_t dim[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    bool leap = (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+    uint32_t month = 0;
+    for (month = 0; month < 12; month++) {
+        uint32_t d = dim[month] + (uint32_t)(month == 1 && leap);
+        if (days < d) break;
+        days -= d;
+    }
+
+    snprintf(buf, (size_t)bufsize, "%04lu-%02lu-%02lu %02lu:%02lu:%02lu UTC",
+             (unsigned long)year,
+             (unsigned long)(month + 1u),
+             (unsigned long)(days  + 1u),
+             (unsigned long)h,
+             (unsigned long)min,
+             (unsigned long)s);
+}
+
 /* --- GET /status.json --- */
 static char            status_buf[512];
 static http_response_t status_resp;
@@ -70,11 +112,19 @@ static const http_response_t *handle_status(const char *req, uint16_t len)
 {
     (void)req; (void)len;
 
-    /* TODO: populate with real values — add fields as needed */
+    // UTC time — "YYYY-MM-DD HH:MM:SS UTC" or "not synced" before first sync.
+    char utc_str[32];
+    if (ntp_is_synced()) {
+        epoch_to_utc_str(ntp_get_utc(), utc_str, (int)sizeof(utc_str));
+    } else {
+        snprintf(utc_str, sizeof(utc_str), "not synced");
+    }
+
     char body[256];
     int blen = snprintf(body, sizeof(body),
-        "{\"uptime_s\":%lu,\"ip\":\"192.168.x.x\"}",
-        HAL_GetTick() / 1000U);
+        "{\"uptime_s\":%lu,\"utc_time\":\"%s\"}",
+        HAL_GetTick() / 1000U,
+        utc_str);
 
     int hlen = snprintf(status_buf, sizeof(status_buf),
         "HTTP/1.0 200 OK\r\n"

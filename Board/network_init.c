@@ -6,6 +6,7 @@
 //   - Bring up HTTP (port 80) and Telnet (port 23) servers
 //   - Wire the LwIP timeout into the tea.c delta timer
 //   - Handle link up / link down via netif status callback
+//   - Start SNTP time sync when internet-capable interface comes up
 //
 // TimbreOS (tea.h, cli.h) is a sibling source directory.
 // All OS primitives come from tea.h; no FreeRTOS, no heap.
@@ -20,6 +21,7 @@
 #include "http_server.h"
 #include "telnet_server.h"
 #include "usb_net.h"
+#include "ntp_sync.h"
 
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
@@ -118,6 +120,10 @@ void dhcp_check_action(void) {
         print(ip4addr_ntoa(netif_ip4_addr(&gnetif)));
         print("\r\n");
         // netif and servers already up from link_callback; IP was updated by DHCP.
+        // Kick SNTP immediately: DHCP has now configured a DNS server, so the
+        // earlier DNS lookup for pool.ntp.org (which may have failed while DHCP
+        // was still negotiating) will now succeed.
+        ntp_sync_kick();
     } else {
         // Still waiting — check again in 1 s.
         after(1000, dhcp_check_action);
@@ -147,12 +153,19 @@ static void link_callback(struct netif *netif) {
         apply_static_ip();
         servers_start();
         kick_lwip_timer();
+        // Start SNTP — Ethernet has a gateway (STATIC_GW) so internet is
+        // potentially reachable.  If DHCP later binds and sets DNS, a kick
+        // in dhcp_check_action will trigger an immediate re-sync.
+        ntp_sync_start();
 
     } else {
         print("NET: link down\r\n");
         dhcp_state = DHCP_STATE_OFF;
         netif_set_down(netif);
         servers_stop();
+        // Only stop SNTP if the USB interface is also not providing internet.
+        // For simplicity we keep SNTP running — it will retry harmlessly and
+        // succeed again when any internet-capable interface comes back up.
     }
 }
 
@@ -227,6 +240,11 @@ void network_init(void) {
     // HTTP and Telnet are reachable at 192.168.7.1 once the host assigns
     // itself an address on the 192.168.7.0/24 subnet.
     usb_netif_init();
+
+    // Start SNTP now so USB-only operation can sync if the USB host forwards
+    // internet traffic.  ntp_sync_start() is idempotent — the Ethernet
+    // link_callback calls it too, so whichever fires first wins.
+    ntp_sync_start();
 
     // Unconditionally kick the LwIP timer chain here.
     //
