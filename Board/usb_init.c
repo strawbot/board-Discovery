@@ -201,7 +201,7 @@ static const char *const string_desc_arr[] = {
     (const char[]){ 0x09, 0x04 },   // 0: language — English (0x0409)
     "TimbreWorks",                   // 1: manufacturer
     "ActiveRobot",                   // 2: product
-    "000001",                        // 3: serial number
+    "ActiveRobot",                   // 3: serial number → /dev/cu.usbmodemActiveRobot1 on macOS
     "TimbreOS CDC",                  // 4: CDC interface
     "020284000001",                  // 5: NCM MAC  02:02:84:00:00:01
     "TimbreOS Net",                  // 6: NCM interface
