@@ -29,6 +29,7 @@
 // USB.  whichever route resolves first will carry the SNTP traffic.
 
 #include "ntp_sync.h"
+#include "http_server.h"   // http_status_push()
 #include "printers.h"
 #include "tea.h"
 
@@ -70,6 +71,9 @@ void ntp_set_utc_seconds(uint32_t sec)
     }
     print(&buf[i]);
     print("\r\n");
+
+    // Push updated UTC time and sync state to any connected status SSE client.
+    http_status_push();
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

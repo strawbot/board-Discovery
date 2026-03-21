@@ -132,7 +132,10 @@ static int pbuf_is_dhcp(struct pbuf *p) {
 
 void tud_network_init_cb(void) {
     // Our LwIP netif stays registered regardless of USB host state.
-    // Nothing to reset here.
+    // Push an updated status event — the USB host has just (re-)enumerated the
+    // NCM interface, so the connection state visible in the browser should
+    // reflect tud_ready() / tud_connected() immediately.
+    http_status_push();
 }
 
 // ── tud_network_recv_cb — Ethernet frame received from USB host ───────────────

@@ -22,6 +22,7 @@
 #include "telnet_server.h"
 #include "usb_net.h"
 #include "ntp_sync.h"
+#include "network_init.h"
 
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
@@ -124,6 +125,8 @@ void dhcp_check_action(void) {
         // earlier DNS lookup for pool.ntp.org (which may have failed while DHCP
         // was still negotiating) will now succeed.
         ntp_sync_kick();
+        // Push updated Ethernet status (now shows real IP + "DHCP").
+        http_status_push();
     } else {
         // Still waiting — check again in 1 s.
         after(1000, dhcp_check_action);
@@ -157,6 +160,8 @@ static void link_callback(struct netif *netif) {
         // potentially reachable.  If DHCP later binds and sets DNS, a kick
         // in dhcp_check_action will trigger an immediate re-sync.
         ntp_sync_start();
+        // Push link-up status to any connected status SSE client.
+        http_status_push();
 
     } else {
         print("NET: link down\r\n");
@@ -166,6 +171,8 @@ static void link_callback(struct netif *netif) {
         // Only stop SNTP if the USB interface is also not providing internet.
         // For simplicity we keep SNTP running — it will retry harmlessly and
         // succeed again when any internet-capable interface comes back up.
+        // Push link-down status to any connected status SSE client.
+        http_status_push();
     }
 }
 
@@ -198,6 +205,31 @@ static void kick_lwip_timer(void) {
     if (next != (Long)SYS_TIMEOUTS_SLEEPTIME_INFINITE) {
         after(next, lwip_timeout_action);
     }
+}
+
+// ── eth_status ────────────────────────────────────────────────────────────────
+// Called by http_server.c when building the status JSON for the SSE stream.
+
+const char *eth_status(void)
+{
+    static char buf[40];
+
+    if (!netif_is_link_up(&gnetif)) {
+        return "link down";
+    }
+
+    const ip4_addr_t *ip = netif_ip4_addr(&gnetif);
+    const char *mode;
+    switch (dhcp_state) {
+        case DHCP_STATE_BOUND:    mode = "DHCP";    break;
+        case DHCP_STATE_TRYING:   mode = "DHCP..."; break;
+        case DHCP_STATE_FALLBACK: mode = "static";  break;
+        default:                  mode = "up";      break;
+    }
+
+    // ip4addr_ntoa() uses a single internal static buffer — copy before reuse.
+    snprintf(buf, sizeof(buf), "%s (%s)", ip4addr_ntoa(ip), mode);
+    return buf;
 }
 
 void lwip_assert_handler(const char *msg) {

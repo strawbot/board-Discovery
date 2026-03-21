@@ -22,6 +22,12 @@
 #include "http_server.h"
 #include "http_content.h"      // const char[] flash content + route table
 #include "ntp_sync.h"          // ntp_get_utc(), ntp_is_synced()
+#include "network_init.h"      // eth_status()
+#include "usb_net.h"           // usb_netif
+
+#include "lwip/netif.h"        // netif_ip4_addr()
+#include "lwip/ip4_addr.h"     // ip4addr_ntoa()
+#include "tusb.h"              // tud_connected(), tud_ready()
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -104,27 +110,71 @@ static void epoch_to_utc_str(uint32_t epoch, char *buf, int bufsize)
              (unsigned long)s);
 }
 
-/* --- GET /status.json --- */
-static char            status_buf[512];
+/* ── Shared status JSON builder ──────────────────────────────────────────── */
+//
+// Called by both /status.json (one-shot) and /status_stream (SSE push).
+// Writes the complete JSON object into buf.  Returns the number of bytes
+// written (excludes the null terminator), capped to bufsize-1.
+//
+// Fields:
+//   uptime_s   — seconds since boot
+//   utc_time   — "YYYY-MM-DD HH:MM:SS UTC" or "not synced"
+//   utc_epoch  — raw Unix epoch (uint32_t); used by the browser for
+//                local time interpolation between SSE events
+//   ethernet   — IP address + DHCP/static tag, or "link down"
+//   usb        — device IP + host enumeration state
+
+static int build_status_json(char *buf, int bufsize)
+{
+    // UTC
+    char utc_str[32];
+    uint32_t utc_epoch = ntp_get_utc();
+    if (ntp_is_synced()) {
+        epoch_to_utc_str(utc_epoch, utc_str, (int)sizeof(utc_str));
+    } else {
+        snprintf(utc_str, sizeof(utc_str), "not synced");
+    }
+
+    // Ethernet
+    const char *eth = eth_status();
+
+    // USB — ip4addr_ntoa() uses a single static buffer so copy it first.
+    char usb_ip[16];
+    snprintf(usb_ip, sizeof(usb_ip), "%s", ip4addr_ntoa(netif_ip4_addr(&usb_netif)));
+    char usb_str[40];
+    if (tud_ready()) {
+        snprintf(usb_str, sizeof(usb_str), "%s (host connected)", usb_ip);
+    } else if (tud_connected()) {
+        snprintf(usb_str, sizeof(usb_str), "%s (enumerating)", usb_ip);
+    } else {
+        snprintf(usb_str, sizeof(usb_str), "%s (no host)", usb_ip);
+    }
+
+    return snprintf(buf, (size_t)bufsize,
+        "{"
+        "\"uptime_s\":%lu,"
+        "\"utc_time\":\"%s\","
+        "\"utc_epoch\":%lu,"
+        "\"ethernet\":\"%s\","
+        "\"usb\":\"%s\""
+        "}",
+        HAL_GetTick() / 1000U,
+        utc_str,
+        (unsigned long)utc_epoch,
+        eth,
+        usb_str);
+}
+
+/* --- GET /status.json — one-shot snapshot for curl / health checks ------- */
+static char            status_buf[640];
 static http_response_t status_resp;
 
 static const http_response_t *handle_status(const char *req, uint16_t len)
 {
     (void)req; (void)len;
 
-    // UTC time — "YYYY-MM-DD HH:MM:SS UTC" or "not synced" before first sync.
-    char utc_str[32];
-    if (ntp_is_synced()) {
-        epoch_to_utc_str(ntp_get_utc(), utc_str, (int)sizeof(utc_str));
-    } else {
-        snprintf(utc_str, sizeof(utc_str), "not synced");
-    }
-
-    char body[256];
-    int blen = snprintf(body, sizeof(body),
-        "{\"uptime_s\":%lu,\"utc_time\":\"%s\"}",
-        HAL_GetTick() / 1000U,
-        utc_str);
+    char body[512];
+    int blen = build_status_json(body, (int)sizeof(body));
 
     int hlen = snprintf(status_buf, sizeof(status_buf),
         "HTTP/1.0 200 OK\r\n"
@@ -132,10 +182,61 @@ static const http_response_t *handle_status(const char *req, uint16_t len)
         "Content-Length: %d\r\n"
         "Connection: close\r\n"
         "\r\n", blen);
-    memcpy(status_buf + hlen, body, blen);
+    memcpy(status_buf + hlen, body, (size_t)blen);
     status_resp.data   = status_buf;
     status_resp.length = (uint32_t)(hlen + blen);
     return &status_resp;
+}
+
+/* --- GET /status_stream — SSE push stream for the status tab ------------- */
+//
+// The browser opens this EventSource only while the status tab is active.
+// The device pushes an event:
+//   • immediately on connection (initial state)
+//   • on every state change (link, DHCP, NTP sync, USB connect)
+//   • every 10 s as a heartbeat (refreshes uptime and utc_epoch for local
+//     interpolation in the browser between real events)
+//
+// At most one client at a time.  A new connection evicts the previous one.
+
+static http_conn_t *status_sse_conn = NULL;
+
+static const http_response_t status_sse_sentinel = { NULL, 0 };
+
+// http_status_push — public; called by network_init, ntp_sync, usb_net.
+void http_status_push(void)
+{
+    if (!status_sse_conn || !status_sse_conn->pcb) return;
+
+    char json[512];
+    int jlen = build_status_json(json, (int)sizeof(json));
+
+    // SSE frame: "data: {json}\n\n"  (double newline terminates the event)
+    char frame[540];
+    int flen = snprintf(frame, sizeof(frame), "data: ");
+    memcpy(frame + flen, json, (size_t)jlen);
+    flen += jlen;
+    frame[flen++] = '\n';
+    frame[flen++] = '\n';
+
+    if (tcp_sndbuf(status_sse_conn->pcb) >= (u16_t)flen) {
+        tcp_write(status_sse_conn->pcb, frame, (u16_t)flen, TCP_WRITE_FLAG_COPY);
+        tcp_output(status_sse_conn->pcb);
+    }
+}
+
+// 10-second heartbeat — reschedules itself while a client is connected.
+void http_status_heartbeat(void)
+{
+    if (!status_sse_conn || !status_sse_conn->pcb) return;
+    http_status_push();
+    after(secs(10), http_status_heartbeat);
+}
+
+static const http_response_t *handle_status_sse(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+    return &status_sse_sentinel;   // http_recv() handles the SSE upgrade
 }
 
 /* --- GET /term_stream (Server-Sent Events) --- */
@@ -238,10 +339,11 @@ static const http_response_t *handle_term_in(const char *req, uint16_t len)
 }
 
 static const http_route_t http_routes[] = {
-    { "GET",  "/",             &resp_index, NULL            },
-    { "GET",  "/status.json",  NULL,        handle_status   },
-    { "GET",  "/term_stream",  NULL,        handle_term_sse },
-    { "POST", "/term_in",      NULL,        handle_term_in  },
+    { "GET",  "/",               &resp_index, NULL               },
+    { "GET",  "/status.json",    NULL,        handle_status      },
+    { "GET",  "/status_stream",  NULL,        handle_status_sse  },
+    { "GET",  "/term_stream",    NULL,        handle_term_sse    },
+    { "POST", "/term_in",        NULL,        handle_term_in     },
 };
 static const int http_route_count =
     (int)(sizeof(http_routes) / sizeof(http_routes[0]));
@@ -250,7 +352,8 @@ static const int http_route_count =
 // Close connection cleanly — clear LwIP callbacks first to prevent re-entry.
 static void conn_close(http_conn_t *c)
 {
-    if (c == sse_conn) sse_conn = NULL;   // un-register SSE subscriber first
+    if (c == sse_conn)        sse_conn        = NULL;   // un-register terminal SSE
+    if (c == status_sse_conn) status_sse_conn = NULL;   // un-register status SSE
     struct tcp_pcb *pcb = c->pcb;
     tcp_arg(pcb,  NULL);
     tcp_recv(pcb, NULL);
@@ -360,7 +463,7 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
             const http_response_t *resp = route_request(c->req_buf, c->req_len);
 
             if (resp == &sse_sentinel) {
-                // Promote connection to persistent SSE stream.
+                // Promote connection to persistent terminal SSE stream.
                 // Evict any existing subscriber first.
                 if (sse_conn && sse_conn->pcb) conn_close(sse_conn);
                 sse_conn = c;
@@ -377,6 +480,30 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                           TCP_WRITE_FLAG_COPY);
                 tcp_output(c->pcb);
                 after(secs(15), http_sse_keepalive);  // start keepalive ping cycle
+
+            } else if (resp == &status_sse_sentinel) {
+                // Promote connection to persistent status SSE stream.
+                // Evict any existing status subscriber first.
+                if (status_sse_conn && status_sse_conn->pcb)
+                    conn_close(status_sse_conn);
+                status_sse_conn = c;
+                c->state = HTTP_SSE;
+                tcp_poll(c->pcb, NULL, 0);      // disable idle timeout
+
+                static const char st_sse_hdr[] =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/event-stream\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n";
+                tcp_write(c->pcb, st_sse_hdr, sizeof(st_sse_hdr) - 1,
+                          TCP_WRITE_FLAG_COPY);
+                tcp_output(c->pcb);
+                // Send initial state immediately so the browser doesn't wait.
+                http_status_push();
+                // Schedule recurring heartbeat (keeps uptime/epoch fresh).
+                after(secs(10), http_status_heartbeat);
+
             } else {
                 c->tx_ptr       = resp->data;
                 c->tx_remaining = resp->length;
@@ -423,7 +550,8 @@ static void http_err(void *arg, err_t err) {
     http_conn_t *c = (http_conn_t *)arg;
     // PCB is already freed by LwIP when err is called — just release our slot.
     if (c) {
-        if (c == sse_conn) sse_conn = NULL;   // un-register before zeroing pcb
+        if (c == sse_conn)        sse_conn        = NULL;
+        if (c == status_sse_conn) status_sse_conn = NULL;
         c->pcb = NULL;
         conn_free(c);
     }
@@ -492,7 +620,8 @@ void http_server_stats(uint8_t *active, uint8_t *idle) {
 }
 
 void http_server_stop(void) {
-    sse_conn = NULL;    // cleared before conn_close loop to avoid double-clear
+    sse_conn        = NULL;    // cleared before conn_close loop to avoid double-clear
+    status_sse_conn = NULL;
     // Close all active connections.
     for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++) {
         if (conns[i].state != HTTP_IDLE) {

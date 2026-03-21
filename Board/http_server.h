@@ -22,4 +22,10 @@ void http_sse_keepalive(void);
 // Fill *active and *idle with current connection counts for show_http().
 void http_server_stats(uint8_t *active, uint8_t *idle);
 
+// Push the current device status to any connected /status_stream SSE client.
+// No-op if no client is listening.  Call from any module on a state change
+// (link up/down, DHCP bind, NTP sync, USB connect) to trigger an immediate
+// update without the browser having to poll.
+void http_status_push(void);
+
 #endif // HTTP_SERVER_H

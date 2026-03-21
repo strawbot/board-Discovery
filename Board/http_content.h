@@ -59,7 +59,12 @@ static const char index_html_data[] =
     "<button class=\"tab\" onclick=\"sw('tm',this)\">Terminal</button>"
     "</div>"
     "<div id=\"st\" class=\"page on\">"
-    "<table><tbody id=\"sb\"></tbody></table>"
+    "<table><tbody>"
+    "<tr><td>Uptime (s)</td><td id=\"sv-uptime_s\">-</td></tr>"
+    "<tr><td>UTC Time</td><td id=\"sv-utc_time\">-</td></tr>"
+    "<tr><td>Ethernet</td><td id=\"sv-ethernet\">-</td></tr>"
+    "<tr><td>USB</td><td id=\"sv-usb\">-</td></tr>"
+    "</tbody></table>"
     "</div>"
     "<div id=\"tm\" class=\"page\">"
     "<div id=\"out\"></div>"
@@ -72,15 +77,53 @@ static const char index_html_data[] =
     "function sw(id,el){"
     "document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));"
     "document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));"
-    "document.getElementById(id).classList.add('on');el.classList.add('on');}"
+    "document.getElementById(id).classList.add('on');el.classList.add('on');"
+    "if(id==='st')stConnect();else stDisconnect();}"
 
-    /* status polling */
-    "setInterval(()=>{"
-    "fetch('/status.json').then(r=>r.json()).then(d=>{"
-    "document.getElementById('sb').innerHTML="
-    "Object.entries(d).map(([k,v])=>"
-    "'<tr><td>'+k+'</td><td>'+v+'</td></tr>').join('');"
-    "}).catch(()=>{});},1000);"
+    /* status SSE — push driven, connect only while status tab is active */
+    "var stEs=null,stEpoch=0,stEpochAt=0,stBase=0,stTick=null;"
+
+    /* local UTC formatter — no network round-trip */
+    "function fmtUTC(ep){"
+    "if(!ep)return'not synced';"
+    "var d=new Date(ep*1000),p=n=>String(n).padStart(2,'0');"
+    "return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())"
+    "+'  '+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds())+' UTC';}"
+
+    /* 1-second tick: update uptime + UTC between SSE pushes — no network */
+    "function stTick_fn(){"
+    "if(!stEpoch)return;"
+    "var el=Math.floor((Date.now()-stEpochAt)/1000);"
+    "var eu=document.getElementById('sv-uptime_s');"
+    "var et=document.getElementById('sv-utc_time');"
+    "if(eu)eu.textContent=stBase+el;"
+    "if(et)et.textContent=fmtUTC(stEpoch+el);}"
+
+    "function stConnect(){"
+    "if(stEs)return;"
+    "stEs=new EventSource('/status_stream');"
+    "stEs.onmessage=e=>{"
+    "try{"
+    "var d=JSON.parse(e.data);"
+    "['uptime_s','utc_time','ethernet','usb'].forEach(k=>{"
+    "var el=document.getElementById('sv-'+k);"
+    "if(el&&d[k]!==undefined)el.textContent=d[k];});"
+    "if(d.utc_epoch){stEpoch=d.utc_epoch;stEpochAt=Date.now();stBase=d.uptime_s||0;}"
+    "}catch(ex){}};"
+    "stEs.onerror=()=>{};"
+    "if(!stTick)stTick=setInterval(stTick_fn,1000);}"
+
+    "function stDisconnect(){"
+    "if(stEs){stEs.close();stEs=null;}"
+    "if(stTick){clearInterval(stTick);stTick=null;}}"
+
+    /* pause SSE when browser tab is hidden; resume when visible again */
+    "document.addEventListener('visibilitychange',()=>{"
+    "if(document.hidden)stDisconnect();"
+    "else if(document.getElementById('st').classList.contains('on'))stConnect();});"
+
+    /* auto-connect on load — status tab is the default active tab */
+    "stConnect();"
 
     /* terminal SSE stream — push output from /term_stream */
     "(function(){"
