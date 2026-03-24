@@ -183,6 +183,11 @@ void show_ethernet(void) {
     print("TX ok:    "); printDec(eth_tx_ok_count);       printCr();
     print("TX err:   "); printDec(eth_tx_err_count);      printCr();
     print("TX t/o:   "); printDec(eth_tx_timeout_count);  printCr();
+    print("PHY resets:"); printDec(eth_recovery_count);   printCr();
+    if (eth_recovery_count > 0) {
+        uint32_t age_s = (HAL_GetTick() - eth_recovery_last_ms) / 1000U;
+        print("  last:   "); printDec(age_s); print("s ago"); printCr();
+    }
     print("TX ARP:   "); printDec(eth_tx_arp_count);       printCr();
     print("TX IP:    "); printDec(eth_tx_ip_count);        printCr();
     print("TX IP dst:");

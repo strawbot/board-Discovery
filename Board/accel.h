@@ -7,8 +7,10 @@
 //
 // Both accelerometers share the same SPI pins and CS (PE3) on all Discovery
 // board revisions.  WHO_AM_I (register 0x0F) distinguishes them:
-//   0x3F → LIS3DSH   (16-bit output, FIFO, post-~2012 boards)
-//   0x3B → LIS302DL  ( 8-bit output, no FIFO path, older boards)
+//   0x3F → LIS3DSH          (16-bit, FIFO, standard production silicon)
+//   0x01 → LIS3DSH (early)  (16-bit, FIFO, pre-production / engineering sample;
+//                             same register map as 0x3F, different silicon ID)
+//   0x3B → LIS302DL         ( 8-bit, no FIFO, oldest boards)
 
 #define REG_WHO_AM_I  0x0Fu
 
@@ -19,9 +21,9 @@ typedef enum {
 } accel_type_t;
 
 // accel_init — probe WHO_AM_I, identify chip, apply ODR and range settings.
-// Uses HAL SPI1 (must be initialised by MX_SPI1_Init() first) with the
+// Uses LL SPI1 (must be initialised by MX_SPI1_Init() first) with the
 // PHY-isolate / PA7-switch mechanism so it is safe to call after MX_LWIP_Init().
-// Returns true if a supported chip is found.
+// Detected chip type is stored internally; query with show_acc() or accel_type.
 void accel_init(void);
 
 // accel_start — arm the sample source appropriate for the detected chip.

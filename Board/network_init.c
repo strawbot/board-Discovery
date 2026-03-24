@@ -156,10 +156,13 @@ static void link_callback(struct netif *netif) {
         apply_static_ip();
         servers_start();
         kick_lwip_timer();
-        // Start SNTP — Ethernet has a gateway (STATIC_GW) so internet is
-        // potentially reachable.  If DHCP later binds and sets DNS, a kick
-        // in dhcp_check_action will trigger an immediate re-sync.
-        ntp_sync_start();
+        // Restart SNTP unconditionally via kick (stop + reinit) rather than
+        // the conditional ntp_sync_start().  This ensures the SNTP PCB is
+        // always fresh on link-up, including after eth_recovery_action() which
+        // resets the MAC DMA under any open UDP sockets.  A stale PCB would
+        // silently fail: sntp_enabled() returns true so ntp_sync_start() is a
+        // no-op, but the underlying socket can no longer receive responses.
+        ntp_sync_kick();
         // Push link-up status to any connected status SSE client.
         http_status_push();
 
@@ -168,9 +171,13 @@ static void link_callback(struct netif *netif) {
         dhcp_state = DHCP_STATE_OFF;
         netif_set_down(netif);
         servers_stop();
-        // Only stop SNTP if the USB interface is also not providing internet.
-        // For simplicity we keep SNTP running — it will retry harmlessly and
-        // succeed again when any internet-capable interface comes back up.
+        // Stop SNTP so its UDP PCB is closed cleanly before the MAC is reset.
+        // If eth_recovery_action() triggered this link-down, the MAC DMA is
+        // about to be torn down; leaving the PCB open causes ntp_sync_start()
+        // to be a no-op on the next link-up (sntp_enabled() still true) and
+        // the refreshed socket never receives responses.  ntp_sync_kick() on
+        // link-up will restart it with a new PCB.
+        ntp_sync_stop();
         // Push link-down status to any connected status SSE client.
         http_status_push();
     }

@@ -26,6 +26,11 @@ void eth_input_action(void);
 // Call once at startup to begin the self-rescheduling polling loop.
 void eth_link_action(void);
 
+// PHY soft-reset + MAC DMA restart for hang recovery.
+// Triggered automatically after ETH_TX_FAIL_THRESH consecutive TX failures
+// while link is up.  May also be called directly from the CLI ("eth-recover").
+void eth_recovery_action(void);
+
 // Stub for CubeMX-generated lwip.c — link state is handled by PHY interrupt.
 void ethernet_link_check_state(struct netif *netif);
 
@@ -53,5 +58,9 @@ extern HAL_StatusTypeDef eth_start_rc;
 extern uint8_t           eth_init_gstate;
 extern uint32_t          eth_init_error;
 extern uint8_t           eth_start_gstate;
+
+// PHY/MAC hang recovery counters — updated by eth_recovery_action().
+extern volatile uint32_t eth_recovery_count;    // total recoveries since boot
+extern volatile uint32_t eth_recovery_last_ms;  // HAL_GetTick() of last recovery
 
 #endif // ETHERNETIF_H

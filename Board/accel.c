@@ -14,8 +14,11 @@
 //
 // Chip detection (same SPI pins, same CS on all Discovery board revisions):
 //   WHO_AM_I register (0x0F):
-//     0x3F → LIS3DSH  — newer boards (post ~2012), 16-bit output
-//     0x3B → LIS302DL — older boards, 8-bit output
+//     0x3F → LIS3DSH (production)      — post-~2012 boards, 16-bit output, FIFO
+//     0x01 → LIS3DSH (early silicon)   — pre-production / engineering sample;
+//                                         "DSH" chip marking; same register map
+//                                         as 0x3F, only the silicon ID differs
+//     0x3B → LIS302DL                  — oldest boards, 8-bit output, no FIFO
 //
 // Timing architecture:
 //
@@ -376,15 +379,17 @@ void accel_init(void)
     uint32_t bmcr = accel_spi_begin();
     detected_id   = lis_read(REG_WHO_AM_I);
 
-    if (detected_id == 0x3Fu) {
+    if (detected_id == 0x3Fu || detected_id == 0x01u) {
+        // 0x3F = production LIS3DSH; 0x01 = early/engineering-sample silicon.
+        // Register map is identical — same init sequence for both.
         accel_type = ACCEL_LIS3DSH;
         lis_write(LIS3DSH_CTRL_REG4, LIS3DSH_CTRL4_VAL);   // 100 Hz, BDU, all axes
         lis_write(LIS3DSH_CTRL_REG5, LIS3DSH_CTRL5_VAL);   // ±2 g, 800 Hz AA
-    } else { //if (detected_id == 0x3Bu) {
+    } else if (detected_id == 0x3Bu) {
         accel_type = ACCEL_LIS302DL;
         lis_write(LIS302DL_CTRL_REG1, LIS302DL_CTRL1_VAL); // active, ±2 g, all axes
-    // } else {
-    //     accel_type = ACCEL_NONE;
+    } else {
+        accel_type = ACCEL_NONE;
     }
 
     accel_spi_end(bmcr);
@@ -434,7 +439,8 @@ void show_acc(void)
     print("Accel:   ");
     switch (accel_type) {
         case ACCEL_LIS3DSH:
-            print("LIS3DSH (FIFO/INT1, 100 Hz ODR, WTM=");
+            print(detected_id == 0x01u ? "LIS3DSH early" : "LIS3DSH");
+            print(" (FIFO/INT1, 100 Hz ODR, WTM=");
             printDec(LIS3DSH_FIFO_WTM);
             print(")");
             break;

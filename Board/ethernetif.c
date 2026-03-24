@@ -26,8 +26,19 @@
 // LAN8720 PHY address — set by PHYAD strap pin on your board (0x00 or 0x01).
 #define LAN8720_PHY_ADDRESS     0x00U
 
+// LAN8720 hardware reset GPIO — PE2 drives nRST (active LOW).
+// Minimum assert time: 100 µs (we use 1 ms).
+// Time from deassert to first MDIO access: ≥ 25 ms (we use 25 ms).
+#define PHY_NRST_PORT           GPIOE
+#define PHY_NRST_PIN            GPIO_PIN_2
+#define PHY_NRST_ASSERT_MS      1U      // hold low
+#define PHY_NRST_RECOVER_MS     25U     // wait after deassert before MDIO
+
 // LAN8720 register map
 #define LAN8720_BCR             0x00U   // Basic Control
+#define LAN8720_BCR_SOFT_RESET  (1U << 15) // BCR bit 15: software reset (self-clearing)
+#define LAN8720_BCR_AUTONEG_EN  (1U << 12) // BCR bit 12: auto-negotiation enable
+#define LAN8720_BCR_RESTART_AN  (1U <<  9) // BCR bit  9: restart auto-negotiation
 #define LAN8720_BSR             0x01U   // Basic Status
 #define LAN8720_ISF             0x1DU   // Interrupt Source Flag  (read-to-clear)
 #define LAN8720_IMR             0x1EU   // Interrupt Mask Register
@@ -89,6 +100,21 @@ volatile uint32_t dbg_eth_input_nodispatch = 0; // ethertype fell through switch
 // rx_alloc_idx used only by HAL_ETH_RxAllocCallback during HAL_ETH_Start_IT().
 static uint32_t rx_alloc_idx = 0;
 
+// ── PHY / MAC watchdog and recovery state ─────────────────────────────────────
+// eth_tx_fail_streak  — increments when TX fails while link_state==LINK_UP;
+//                       reset to 0 on any successful TX or on recovery.
+// ETH_TX_FAIL_THRESH  — number of consecutive failures that triggers recovery.
+// eth_recovery_pending — true while recovery is queued in the action loop.
+// eth_recovery_count  — total number of recovery attempts since boot.
+// eth_recovery_last_ms — HAL_GetTick() timestamp of most recent recovery.
+
+#define ETH_TX_FAIL_THRESH      3u
+
+static          uint8_t  eth_tx_fail_streak   = 0;
+static          bool     eth_recovery_pending = false;
+volatile uint32_t eth_recovery_count    = 0;
+volatile uint32_t eth_recovery_last_ms  = 0;
+
 ETH_HandleTypeDef heth;         // not static — referenced by discovery_cli.c
 
 // Saved init results — readable from show_ethernet() after USART6 is ready.
@@ -139,6 +165,10 @@ static uint16_t phy_read(uint16_t reg) {
     uint32_t val = 0;
     HAL_ETH_ReadPHYRegister(&heth, LAN8720_PHY_ADDRESS, reg, &val);
     return (uint16_t)val;
+}
+
+static void phy_write(uint16_t reg, uint16_t val) {
+    HAL_ETH_WritePHYRegister(&heth, LAN8720_PHY_ADDRESS, reg, (uint32_t)val);
 }
 
 // ── HAL RX complete callback ──────────────────────────────────────────────────
@@ -193,6 +223,7 @@ void HAL_ETH_MspInit(ETH_HandleTypeDef *hethMsp) {
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOE_CLK_ENABLE();      // PE2 = PHY nRST
     __HAL_RCC_SYSCFG_CLK_ENABLE();
 
     // ── Select RMII (not MII) via SYSCFG_PMC ─────────────────────────────────
@@ -217,9 +248,36 @@ void HAL_ETH_MspInit(ETH_HandleTypeDef *hethMsp) {
     gpio.Pin = GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5;
     HAL_GPIO_Init(GPIOC, &gpio);
 
+    // ── PE2 — LAN8720 nRST (active LOW) ──────────────────────────────────────
+    // Drive HIGH first to avoid glitching the reset line during reconfiguration,
+    // then init the pin.  WritePin before Init is safe: BSRR is always writable.
+    HAL_GPIO_WritePin(PHY_NRST_PORT, PHY_NRST_PIN, GPIO_PIN_SET);
+    GPIO_InitTypeDef rst_gpio = { 0 };
+    rst_gpio.Pin   = PHY_NRST_PIN;
+    rst_gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+    rst_gpio.Pull  = GPIO_NOPULL;
+    rst_gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(PHY_NRST_PORT, &rst_gpio);
+
     // ── Enable ETH interrupt ──────────────────────────────────────────────────
     HAL_NVIC_SetPriority(ETH_IRQn, 7, 0);
     HAL_NVIC_EnableIRQ(ETH_IRQn);
+}
+
+// ── eth_rx_ring_init — reset the RX DMA descriptor ring ──────────────────────
+// Called once during ethernetif_init() and again during PHY/MAC recovery.
+// Must be called after HAL_ETH_Init() so that heth.Init.RxDesc is populated.
+
+static void eth_rx_ring_init(void) {
+    rx_read_idx  = 0;
+    rx_alloc_idx = 0;
+    for (uint32_t i = 0; i < ETH_RX_DESC_COUNT; i++) {
+        rx_desc[i].DESC2 = (uint32_t)rx_buf[i];
+        rx_desc[i].DESC3 = (uint32_t)&rx_desc[(i + 1U) % ETH_RX_DESC_COUNT];
+        rx_desc[i].DESC1 = (ETH_RX_BUFFER_SIZE & 0x1FFFU) | RDES1_RCH;
+        rx_desc[i].DESC0 = RDES0_OWN;
+    }
+    __DSB();    // ensure writes are visible to DMA before start
 }
 
 // ── ethernetif_init ───────────────────────────────────────────────────────────
@@ -238,6 +296,26 @@ err_t ethernetif_init(struct netif *netif) {
     netif->hwaddr_len = ETH_HWADDR_LEN;
     memcpy(netif->hwaddr, default_mac, ETH_HWADDR_LEN);
 
+    // ── Boot-time PHY hardware reset ──────────────────────────────────────────
+    // HAL_ETH_MspInit (called by HAL_ETH_Init below) configures PE2 and drives
+    // it HIGH, but it does NOT pulse nRST.  An explicit pulse here guarantees
+    // the PHY starts from a known clean state regardless of any prior activity
+    // (e.g. debugger resets that left the PHY in a partial state).
+    // PE2 must already be clocked before this point — MspInit will be called by
+    // HAL_ETH_Init, which runs first for the very first boot.  For idempotency
+    // we enable the clock and configure the pin here before using it.
+    __HAL_RCC_GPIOE_CLK_ENABLE();
+    GPIO_InitTypeDef boot_rst = { 0 };
+    boot_rst.Pin   = PHY_NRST_PIN;
+    boot_rst.Mode  = GPIO_MODE_OUTPUT_PP;
+    boot_rst.Pull  = GPIO_NOPULL;
+    boot_rst.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(PHY_NRST_PORT, &boot_rst);
+    HAL_GPIO_WritePin(PHY_NRST_PORT, PHY_NRST_PIN, GPIO_PIN_RESET);
+    HAL_Delay(PHY_NRST_ASSERT_MS);
+    HAL_GPIO_WritePin(PHY_NRST_PORT, PHY_NRST_PIN, GPIO_PIN_SET);
+    HAL_Delay(PHY_NRST_RECOVER_MS);
+
     // ── HAL ETH init ─────────────────────────────────────────────────────────
     heth.Instance            = ETH;
     heth.Init.MACAddr        = netif->hwaddr;
@@ -255,18 +333,10 @@ err_t ethernetif_init(struct netif *netif) {
 
     // ── Explicitly initialise RX descriptor ring (chained mode) ──────────────
     // Some HAL revisions populate descriptors via HAL_ETH_RxAllocCallback;
-    // others leave them uninitialised.  Writing them here is always correct and
-    // idempotent — if the HAL callback already ran, we overwrite with the same
-    // values.
-    rx_read_idx  = 0;
-    rx_alloc_idx = 0;
-    for (uint32_t i = 0; i < ETH_RX_DESC_COUNT; i++) {
-        rx_desc[i].DESC2 = (uint32_t)rx_buf[i];                              // buffer
-        rx_desc[i].DESC3 = (uint32_t)&rx_desc[(i + 1U) % ETH_RX_DESC_COUNT];// next desc
-        rx_desc[i].DESC1 = (ETH_RX_BUFFER_SIZE & 0x1FFFU) | RDES1_RCH;      // size + chain
-        rx_desc[i].DESC0 = RDES0_OWN;                                         // DMA owns
-    }
-    __DSB();    // ensure descriptor writes are visible to DMA before start
+    // others leave them uninitialised.  eth_rx_ring_init() is always correct
+    // and idempotent — if the HAL callback already ran we overwrite with the
+    // same values.
+    eth_rx_ring_init();
 
     // ── PHY link polling ──────────────────────────────────────────────────────
     // LAN8720 NINT/REFCLK0 (PA1) is used as ETH_REF_CLK — the 50 MHz RMII
@@ -330,11 +400,22 @@ static err_t ethernetif_output(struct netif *netif, struct pbuf *p) {
     HAL_StatusTypeDef tx_rc = HAL_ETH_Transmit(&heth, &TxConfig, ETH_TX_TIMEOUT);
     if (tx_rc == HAL_OK) {
         eth_tx_ok_count++;
+        eth_tx_fail_streak = 0;     // clear watchdog streak on any success
         return ERR_OK;
     } else if (tx_rc == HAL_TIMEOUT) {
         eth_tx_timeout_count++;
     } else {
         eth_tx_err_count++;
+    }
+
+    // Consecutive TX failures while link appears up → schedule PHY/MAC recovery.
+    // Only arm once per episode (eth_recovery_pending guards against repeat queuing).
+    if (link_state == LINK_UP) {
+        eth_tx_fail_streak++;
+        if (eth_tx_fail_streak >= ETH_TX_FAIL_THRESH && !eth_recovery_pending) {
+            eth_recovery_pending = true;
+            later(eth_recovery_action);
+        }
     }
     return ERR_IF;
 }
@@ -519,6 +600,77 @@ void eth_link_action(void) {
 
     } else if (!up && link_state == LINK_UP) {
         link_state = LINK_DOWN;
+        eth_tx_fail_streak = 0;     // link-drop clears streak — not a TX hang
         netif_set_link_down(&gnetif);
     }
+}
+
+// ── eth_recovery_action — PHY soft-reset and MAC DMA restart ─────────────────
+//
+// Triggered automatically when eth_tx_fail_streak reaches ETH_TX_FAIL_THRESH
+// consecutive TX failures while link_state == LINK_UP, indicating the MAC or
+// PHY has locked up without a detectable link-down event.
+//
+// Also callable directly from the CLI ("eth-recover") for manual testing.
+//
+// Recovery sequence:
+//   1. Tell LwIP the link is down — prevents further TX attempts during reset.
+//   2. Stop MAC DMA (HAL_ETH_Stop_IT).
+//   3. Assert PE2 (nRST) LOW for PHY_NRST_ASSERT_MS, deassert, then wait
+//      PHY_NRST_RECOVER_MS for the LAN8720 to complete its power-on init.
+//      Hardware nRST is more reliable than BMCR soft reset for hard hangs.
+//   4. Full HAL deinit + reinit — resets MAC DMA registers and descriptor rings.
+//   5. Restart DMA (HAL_ETH_Start_IT).
+//   6. eth_link_action() picks up from here and calls netif_set_link_up() once
+//      BSR confirms the link is re-established (typically within 1–3 s).
+//
+// Note: HAL_ETH_MspInit is called again during HAL_ETH_Init but is idempotent —
+// re-enabling clocks and re-configuring GPIO AF is safe.  PE2 is written HIGH
+// inside MspInit so the PHY is never left in reset across subsequent HAL inits.
+
+void eth_recovery_action(void) {
+    eth_recovery_pending  = false;
+    eth_recovery_count++;
+    eth_recovery_last_ms  = HAL_GetTick();
+    eth_tx_fail_streak    = 0;
+
+    print("ETH: TX hang — starting recovery\r\n");
+
+    // Step 1 — tell LwIP link is down so it stops generating TX.
+    link_state = LINK_DOWN;
+    netif_set_link_down(&gnetif);
+
+    // Step 2 — stop MAC DMA (sets heth.gState = READY; MDIO still usable).
+    HAL_ETH_Stop_IT(&heth);
+
+    // Step 3 — hardware PHY reset via PE2 (nRST, active LOW).
+    // HAL_Delay is acceptable here: Ethernet is already non-functional and
+    // the total block is only PHY_NRST_ASSERT_MS + PHY_NRST_RECOVER_MS ms.
+    HAL_GPIO_WritePin(PHY_NRST_PORT, PHY_NRST_PIN, GPIO_PIN_RESET);  // assert
+    HAL_Delay(PHY_NRST_ASSERT_MS);
+    HAL_GPIO_WritePin(PHY_NRST_PORT, PHY_NRST_PIN, GPIO_PIN_SET);    // deassert
+    HAL_Delay(PHY_NRST_RECOVER_MS);   // wait for PHY power-on init to complete
+
+    // Step 4 — HAL deinit + reinit.
+    // HAL_ETH_DeInit sets gState = RESET so the subsequent HAL_ETH_Init will
+    // call HAL_ETH_MspInit (idempotent) and fully reprogram DMA registers.
+    HAL_ETH_DeInit(&heth);
+    heth.Init.TxDesc = tx_desc;
+    heth.Init.RxDesc = rx_desc;
+    HAL_StatusTypeDef rc = HAL_ETH_Init(&heth);
+    if (rc != HAL_OK) {
+        print("ETH: HAL_ETH_Init failed during recovery\r\n");
+        return;
+    }
+
+    // Redo our custom RX ring setup — HAL_ETH_Init may or may not have touched
+    // the descriptors (HAL-version-dependent).  Always safe to overwrite.
+    eth_rx_ring_init();
+
+    // Step 5 — restart DMA.
+    HAL_ETH_Start_IT(&heth);
+
+    print("ETH: recovery done — waiting for link\r\n");
+    // Step 6 — eth_link_action() will detect BSR link-up on its next 1-second
+    // tick and call netif_set_link_up(), restoring IP connectivity.
 }

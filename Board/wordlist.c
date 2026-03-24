@@ -21,7 +21,8 @@ void cii(void);
 
 // Words
 NAMES(wordnames)
-	NAME("show-eth")		//  show Ethernet link status, speed, duplex and PHY info
+	NAME("show-eth")		//  show Ethernet link status, speed, duplex, PHY info and recovery stats
+	NAME("eth-recover")		//  force PHY soft-reset and MAC DMA restart (also runs automatically on TX hang)
 	NAME("show-ip")		//  show IP address, gateway, netmask and DHCP state
 	NAME("show-net")		//  show LwIP network statistics: RX/TX counts, errors
 	NAME("show-http")		//  show HTTP server state and active connections
@@ -164,6 +165,7 @@ NAMES(wordnames)
 END_NAMES
 
 void show_ethernet(void);
+void eth_recovery_action(void);
 void show_ip(void);
 void show_net(void);
 void show_http(void);
@@ -306,6 +308,7 @@ void nap_for(void);
 
 BODIES(wordbodies)
 	BODY(show_ethernet)
+	BODY(eth_recovery_action)
 	BODY(show_ip)
 	BODY(show_net)
 	BODY(show_http)
