@@ -91,9 +91,13 @@ static void pa7_as_eth_crs_dv(void)
 // BCR bit 10 (ISOLATE) puts CRS_DV, RXD[1:0] and RXER into high-Z.
 // REFCLKO (50 MHz → PA1) continues to run — MAC DMA clock is unaffected.
 
-#define PHY_ADDR    0x00U       // matches LAN8720_PHY_ADDRESS in ethernetif.c
-#define PHY_BCR     0x00U       // Basic Control Register
-#define PHY_ISOLATE 0x0400U     // BCR bit 10
+#define PHY_ADDR       0x00U       // matches LAN8720_PHY_ADDRESS in ethernetif.c
+#ifndef PHY_BCR
+#define PHY_BCR        0x00U       // Basic Control Register
+#endif
+#ifndef PHY_ISOLATE
+#define PHY_ISOLATE    0x0400U     // BCR bit 10
+#endif
 
 // accel_spi_begin: isolate PHY, switch PA7 to SPI1_MOSI.
 //                 Returns original BCR value for restoration.

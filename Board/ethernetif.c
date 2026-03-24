@@ -167,6 +167,7 @@ static uint16_t phy_read(uint16_t reg) {
     return (uint16_t)val;
 }
 
+static void phy_write(uint16_t reg, uint16_t val) __attribute__((unused));
 static void phy_write(uint16_t reg, uint16_t val) {
     HAL_ETH_WritePHYRegister(&heth, LAN8720_PHY_ADDRESS, reg, (uint32_t)val);
 }
