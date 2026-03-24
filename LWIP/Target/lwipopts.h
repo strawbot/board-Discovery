@@ -64,6 +64,7 @@
 /*----- Value in opt.h for MEMP_NUM_SYS_TIMEOUT: (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_AUTOIP + LWIP_IGMP + LWIP_DNS + (PPP_SUPPORT*6*MEMP_NUM_PPP_PCB) + (LWIP_IPV6 ? (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD) : 0)) -*/
 /* Increased: two netifs (Ethernet + USB) each register ARP timers; DHCP on Ethernet
    registers 2; DNS adds 1; SNTP adds 1; extra headroom for TCP connections.  */
+/*----- Default Value for MEMP_NUM_SYS_TIMEOUT: 5 ---*/
 #define MEMP_NUM_SYS_TIMEOUT 14
 /*----- Value in opt.h for LWIP_ETHERNET: LWIP_ARP || PPPOE_SUPPORT -*/
 #define LWIP_ETHERNET 1
@@ -115,15 +116,6 @@
  * with the same value — net effect zero.  The USB path has no DMA, so LwIP's
  * software-computed value is what the host actually receives.
  */
-#define CHECKSUM_GEN_IP 1
-/*----- Value in opt.h for CHECKSUM_GEN_UDP: 1 -----*/
-#define CHECKSUM_GEN_UDP 1
-/*----- Value in opt.h for CHECKSUM_GEN_TCP: 1 -----*/
-#define CHECKSUM_GEN_TCP 1
-/*----- Value in opt.h for CHECKSUM_GEN_ICMP: 1 -----*/
-#define CHECKSUM_GEN_ICMP 1
-/*----- Value in opt.h for CHECKSUM_GEN_ICMP6: 1 -----*/
-#define CHECKSUM_GEN_ICMP6 1
 /*----- Value in opt.h for CHECKSUM_CHECK_IP: 1 -----*/
 #define CHECKSUM_CHECK_IP 0
 /*----- Value in opt.h for CHECKSUM_CHECK_UDP: 1 -----*/

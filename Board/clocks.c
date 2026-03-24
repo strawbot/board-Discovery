@@ -6,6 +6,8 @@
 #include "cli.h"
 #include "project_defs.h"
 #include "tim.h"
+#include <time.h>
+#include <stdlib.h>
 
 void over_due() { /* incCtr(overDueTea); */ }
 
@@ -21,14 +23,26 @@ void delta_alarm() { LL_TIM_ClearFlag_UPDATE(TIM2);  now(*alarmEvent); }
 Long get_ticks() { return LL_TIM_GetCounter(TIM5); } // 100 us ticks
 
 void show_timer() {
-	print("UTC:");
-	dotnb(8, 8, get_ticks(), 16);
 	print("  ticks/S:");
 	printDec(ONE_SECOND);
 	print("  Timer:");
 	dotnb(8, 8, TIM2->CNT, 16);
-	print("  ticks/S:");
-	printDec(TE_SECOND);
+	print("  UTC:");
+    struct tm *utc_tm;
+    char time_str[100];
+	time_t now = get_utc();
+	printDec(now);
+	// 2. Convert time_t to a UTC struct tm
+    // gmtime returns a pointer to a static struct, so it is not thread-safe.
+    // Use gmtime_r (POSIX) for thread-safe applications.
+    utc_tm = gmtime(&now);
+    if (utc_tm == NULL) {
+        print("\n gmtime failed ");
+        return;
+    }
+    // 3. Format the struct tm into a string
+    strftime(time_str, sizeof(time_str), " %Y-%m-%d %H:%M:%S ", utc_tm);
+    print(time_str);
 }
 
 void micro_sleep() { __WFI(); }

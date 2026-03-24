@@ -216,6 +216,19 @@ void TIM2_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles SPI1 global interrupt.
+  */
+void SPI1_IRQHandler(void)
+{
+  /* USER CODE BEGIN SPI1_IRQn 0 */
+
+  /* USER CODE END SPI1_IRQn 0 */
+  /* USER CODE BEGIN SPI1_IRQn 1 */
+
+  /* USER CODE END SPI1_IRQn 1 */
+}
+
+/**
   * @brief This function handles Ethernet global interrupt.
   */
 void ETH_IRQHandler(void)
@@ -278,5 +291,22 @@ void USART6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief  EXTI line 0 interrupt — LIS3DSH MEMS_INT1 (PE0, FIFO watermark).
+  *         Clears the pending flag and hands off to the accelerometer driver.
+  *         accel_int1_isr() enqueues accel_batch_process() via later(); no
+  *         SPI or floating-point work is done in interrupt context.
+  */
+void EXTI0_IRQHandler(void)
+{
+  /* USER CODE BEGIN EXTI0_IRQn 0 */
+  if (LL_EXTI_IsActiveFlag_0_31(LL_EXTI_LINE_0)) {
+    LL_EXTI_ClearFlag_0_31(LL_EXTI_LINE_0);
+    void accel_int1_isr(void);
+    accel_int1_isr();
+  }
+  /* USER CODE END EXTI0_IRQn 0 */
+}
 
 /* USER CODE END 1 */

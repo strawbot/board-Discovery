@@ -37,6 +37,7 @@ static const char index_html_data[] =
     "Connection: close\r\n"
     "\r\n"
     "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>STM32</title>"
+    "<script src=\"https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js\"></script>"
     "<style>"
     "body{font-family:monospace;background:#111;color:#ccc;margin:0;padding:0}"
     ".tabs{display:flex;background:#222}"
@@ -53,11 +54,16 @@ static const char index_html_data[] =
     "#inp{flex:1;background:#000;color:#0f0;border:1px solid #444;"
          "padding:4px 6px;font-family:monospace;font-size:13px}"
     "#btn{background:#333;color:#0f0;border:1px solid #444;padding:4px 12px;cursor:pointer}"
+    "#ac-cv{width:100%;height:360px;display:block;background:#111}"
+    "#ac-hud{font-size:12px;color:#666;padding:4px 0 0 2px}"
     "</style></head><body>"
     "<div class=\"tabs\">"
     "<button class=\"tab on\" onclick=\"sw('st',this)\">Active Robot</button>"
     "<button class=\"tab\" onclick=\"sw('tm',this)\">Terminal</button>"
+    "<button class=\"tab\" onclick=\"sw('ac',this)\">Board</button>"
     "</div>"
+
+    /* ── Status tab ── */
     "<div id=\"st\" class=\"page on\">"
     "<table><tbody>"
     "<tr><td>Uptime (s)</td><td id=\"sv-uptime_s\">-</td></tr>"
@@ -66,6 +72,8 @@ static const char index_html_data[] =
     "<tr><td>USB</td><td id=\"sv-usb\">-</td></tr>"
     "</tbody></table>"
     "</div>"
+
+    /* ── Terminal tab ── */
     "<div id=\"tm\" class=\"page\">"
     "<div id=\"out\"></div>"
     "<div id=\"irow\">"
@@ -73,24 +81,31 @@ static const char index_html_data[] =
     " autocapitalize=\"none\" spellcheck=\"false\" placeholder=\"command...\">"
     "<button id=\"btn\" onclick=\"send()\">Send</button>"
     "</div></div>"
+
+    /* ── Board / accelerometer tab ── */
+    "<div id=\"ac\" class=\"page\">"
+    "<canvas id=\"ac-cv\"></canvas>"
+    "<div id=\"ac-hud\">pitch: <span id=\"ac-p\">-</span>&deg;"
+    "  roll: <span id=\"ac-r\">-</span>&deg;</div>"
+    "</div>"
+
     "<script>"
+
+    /* ── Tab switcher — drives all SSE connect/disconnect ── */
     "function sw(id,el){"
     "document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));"
     "document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));"
     "document.getElementById(id).classList.add('on');el.classList.add('on');"
-    "if(id==='st')stConnect();else stDisconnect();}"
+    "if(id==='st')stConnect();else stDisconnect();"
+    "if(id==='ac')acConnect();else acDisconnect();}"
 
-    /* status SSE — push driven, connect only while status tab is active */
+    /* ── Status SSE ── */
     "var stEs=null,stEpoch=0,stEpochAt=0,stBase=0,stTick=null;"
-
-    /* local UTC formatter — no network round-trip */
     "function fmtUTC(ep){"
     "if(!ep)return'not synced';"
     "var d=new Date(ep*1000),p=n=>String(n).padStart(2,'0');"
     "return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())"
     "+'  '+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds())+' UTC';}"
-
-    /* 1-second tick: update uptime + UTC between SSE pushes — no network */
     "function stTick_fn(){"
     "if(!stEpoch)return;"
     "var el=Math.floor((Date.now()-stEpochAt)/1000);"
@@ -98,7 +113,6 @@ static const char index_html_data[] =
     "var et=document.getElementById('sv-utc_time');"
     "if(eu)eu.textContent=stBase+el;"
     "if(et)et.textContent=fmtUTC(stEpoch+el);}"
-
     "function stConnect(){"
     "if(stEs)return;"
     "stEs=new EventSource('/status_stream');"
@@ -112,20 +126,100 @@ static const char index_html_data[] =
     "}catch(ex){}};"
     "stEs.onerror=()=>{};"
     "if(!stTick)stTick=setInterval(stTick_fn,1000);}"
-
     "function stDisconnect(){"
     "if(stEs){stEs.close();stEs=null;}"
     "if(stTick){clearInterval(stTick);stTick=null;}}"
 
-    /* pause SSE when browser tab is hidden; resume when visible again */
-    "document.addEventListener('visibilitychange',()=>{"
-    "if(document.hidden)stDisconnect();"
-    "else if(document.getElementById('st').classList.contains('on'))stConnect();});"
+    /* ── Board 3-D visualiser ── */
+    /* AC — accelerometer/board namespace */
+    "var AC={es:null,ren:null,sc:null,cam:null,brd:null,topMat:null,tap:0};"
 
-    /* auto-connect on load — status tab is the default active tab */
+    "function acInit(){"
+    "if(!window.THREE)return;"                              /* CDN not loaded */
+    "var cv=document.getElementById('ac-cv');"
+    "cv.width=cv.offsetWidth||640;cv.height=360;"
+    "AC.ren=new THREE.WebGLRenderer({canvas:cv,antialias:true});"
+    "AC.ren.setSize(cv.width,cv.height);"
+    "AC.ren.setClearColor(0x111111);"
+    "AC.sc=new THREE.Scene();"
+    "AC.cam=new THREE.PerspectiveCamera(45,cv.width/360,0.1,100);"
+    "AC.cam.position.set(0,2.6,4.2);"
+    "AC.cam.lookAt(0,0,0);"
+    /* Lighting */
+    "AC.sc.add(new THREE.AmbientLight(0xffffff,0.45));"
+    "var dl=new THREE.DirectionalLight(0xffffff,0.85);"
+    "dl.position.set(1.5,3,2.5);AC.sc.add(dl);"
+    /* PCB board: 2×0.08×1.4 box, per-face materials */
+    /* Face order: +x,-x,+y(top),-y(bottom),+z,-z */
+    "var side=new THREE.MeshLambertMaterial({color:0x1a5e1a});"
+    "AC.topMat=new THREE.MeshLambertMaterial({color:0x2a8c2a});"
+    "var bot=new THREE.MeshLambertMaterial({color:0x0d3d0d});"
+    "AC.brd=new THREE.Mesh("
+    "new THREE.BoxGeometry(2.0,0.08,1.4),"
+    "[side,side,AC.topMat,bot,side,side]);"
+    "AC.sc.add(AC.brd);"
+    /* Four LEDs — LD3 orange, LD4 green, LD5 red, LD6 blue */
+    /* Positioned near right edge of the board top face */
+    "[{c:0xff6600,z:0.44},{c:0x00ff00,z:0.22},{c:0xff2200,z:0},{c:0x2255ff,z:-0.22}]"
+    ".forEach(function(l){"
+    "var m=new THREE.Mesh("
+    "new THREE.BoxGeometry(0.09,0.09,0.09),"
+    "new THREE.MeshBasicMaterial({color:l.c}));"
+    "m.position.set(0.78,0.085,l.z);"
+    "AC.brd.add(m);});"
+    /* MCU footprint — dark square on top face */
+    "var mcu=new THREE.Mesh("
+    "new THREE.BoxGeometry(0.55,0.05,0.55),"
+    "new THREE.MeshLambertMaterial({color:0x1c1c1c}));"
+    "mcu.position.set(-0.2,0.065,0);"
+    "AC.brd.add(mcu);"
+    /* Render loop */
+    "(function loop(){"
+    "requestAnimationFrame(loop);"
+    "var dt=Date.now()-AC.tap;"
+    "if(AC.tap&&dt<500){"
+    /* Tap: scale pulse + flash top face orange → fade back to green */
+    "var s=1+0.13*Math.sin(dt/500*Math.PI);"
+    "AC.brd.scale.set(s,s,s);"
+    "AC.topMat.color.setHex(dt<250?0xffa500:0x2a8c2a);"
+    "}else{"
+    "AC.brd.scale.set(1,1,1);"
+    "AC.topMat.color.setHex(0x2a8c2a);}"
+    "AC.ren.render(AC.sc,AC.cam);"
+    "})();}"
+
+    "function acConnect(){"
+    "if(AC.es)return;"
+    "if(!AC.ren)acInit();"
+    "AC.es=new EventSource('/accel_stream');"
+    "AC.es.onmessage=function(e){"
+    "try{"
+    "var d=JSON.parse(e.data);"
+    /* p and r are tenths of a degree from firmware */
+    "var pitch=d.p/10,roll=d.r/10;"
+    "if(AC.brd){"
+    "AC.brd.rotation.x=pitch*Math.PI/180;"
+    "AC.brd.rotation.z=roll*Math.PI/180;}"
+    "document.getElementById('ac-p').textContent=pitch.toFixed(1);"
+    "document.getElementById('ac-r').textContent=roll.toFixed(1);"
+    "if(d.t)AC.tap=Date.now();"
+    "}catch(ex){}};"
+    "AC.es.onerror=function(){};}"
+
+    "function acDisconnect(){"
+    "if(AC.es){AC.es.close();AC.es=null;}}"
+
+    /* ── Visibility / focus management ── */
+    "document.addEventListener('visibilitychange',()=>{"
+    "if(document.hidden){stDisconnect();acDisconnect();}"
+    "else{"
+    "if(document.getElementById('st').classList.contains('on'))stConnect();"
+    "if(document.getElementById('ac').classList.contains('on'))acConnect();}});"
+
+    /* Auto-connect on load — status tab is default */
     "stConnect();"
 
-    /* terminal SSE stream — push output from /term_stream */
+    /* ── Terminal SSE ── */
     "(function(){"
     "const o=document.getElementById('out');"
     "const es=new EventSource('/term_stream');"
@@ -133,7 +227,7 @@ static const char index_html_data[] =
     "es.onerror=function(){};"
     "})();"
 
-    /* command history (up/down arrows) + send (Enter or button) */
+    /* ── Terminal input ── */
     "var hist=[],histIdx=0;"
     "function send(){"
     "const el=document.getElementById('inp');"
@@ -143,7 +237,6 @@ static const char index_html_data[] =
     "const buf=new Uint8Array(enc.length+1);"
     "buf.set(enc);buf[enc.length]=0xD;"
     "fetch('/term_in',{method:'POST',body:buf}).catch(()=>{});}"
-
     "document.getElementById('inp')"
     ".addEventListener('keydown',e=>{"
     "if(e.key==='Enter'){send();}"

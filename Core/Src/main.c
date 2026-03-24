@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "lwip.h"
+#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "usb_otg.h"
@@ -29,6 +30,7 @@
 #include "cli_transport_usart6.h"
 #include "usb_init.h"
 #include "tea.h"
+#include "accel.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -98,6 +100,7 @@ int main(void)
   MX_USART6_UART_Init();
   MX_TIM5_Init();
   MX_USB_OTG_FS_PCD_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
 void init_tea();
 void init_cli();
@@ -107,6 +110,7 @@ void init_cli();
   cdc_transport_init();
   void network_init(void);
   later(network_init);
+  // later(accel_init);
   /* USER CODE END 2 */
 
   /* Infinite loop */

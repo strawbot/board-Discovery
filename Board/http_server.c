@@ -203,6 +203,36 @@ static http_conn_t *status_sse_conn = NULL;
 
 static const http_response_t status_sse_sentinel = { NULL, 0 };
 
+/* --- GET /accel_stream — SSE push for accelerometer orientation + tap ------ */
+
+static http_conn_t *accel_sse_conn = NULL;
+
+static const http_response_t accel_sse_sentinel = { NULL, 0 };
+
+// http_accel_push — public; called by accel.c on each significant sample.
+// pitch10 / roll10 are angle × 10 (integer tenths of a degree).
+// tap is true for one call on a detected tap event.
+void http_accel_push(int16_t pitch10, int16_t roll10, bool tap)
+{
+    if (!accel_sse_conn || !accel_sse_conn->pcb) return;
+
+    char frame[64];
+    int n = snprintf(frame, sizeof(frame),
+        "data: {\"p\":%d,\"r\":%d,\"t\":%d}\n\n",
+        (int)pitch10, (int)roll10, tap ? 1 : 0);
+
+    if (tcp_sndbuf(accel_sse_conn->pcb) >= (u16_t)n) {
+        tcp_write(accel_sse_conn->pcb, frame, (u16_t)n, TCP_WRITE_FLAG_COPY);
+        tcp_output(accel_sse_conn->pcb);
+    }
+}
+
+static const http_response_t *handle_accel_sse(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+    return &accel_sse_sentinel;   // http_recv() handles the SSE upgrade
+}
+
 // http_status_push — public; called by network_init, ntp_sync, usb_net.
 void http_status_push(void)
 {
@@ -342,6 +372,7 @@ static const http_route_t http_routes[] = {
     { "GET",  "/",               &resp_index, NULL               },
     { "GET",  "/status.json",    NULL,        handle_status      },
     { "GET",  "/status_stream",  NULL,        handle_status_sse  },
+    { "GET",  "/accel_stream",   NULL,        handle_accel_sse   },
     { "GET",  "/term_stream",    NULL,        handle_term_sse    },
     { "POST", "/term_in",        NULL,        handle_term_in     },
 };
@@ -354,6 +385,7 @@ static void conn_close(http_conn_t *c)
 {
     if (c == sse_conn)        sse_conn        = NULL;   // un-register terminal SSE
     if (c == status_sse_conn) status_sse_conn = NULL;   // un-register status SSE
+    if (c == accel_sse_conn)  accel_sse_conn  = NULL;   // un-register accel SSE
     struct tcp_pcb *pcb = c->pcb;
     tcp_arg(pcb,  NULL);
     tcp_recv(pcb, NULL);
@@ -504,6 +536,26 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                 // Schedule recurring heartbeat (keeps uptime/epoch fresh).
                 after(secs(10), http_status_heartbeat);
 
+            } else if (resp == &accel_sse_sentinel) {
+                // Promote connection to persistent accelerometer SSE stream.
+                // Evict any existing subscriber first.
+                if (accel_sse_conn && accel_sse_conn->pcb)
+                    conn_close(accel_sse_conn);
+                accel_sse_conn = c;
+                c->state = HTTP_SSE;
+                tcp_poll(c->pcb, NULL, 0);      // disable idle timeout
+
+                static const char ac_sse_hdr[] =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/event-stream\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n";
+                tcp_write(c->pcb, ac_sse_hdr, sizeof(ac_sse_hdr) - 1,
+                          TCP_WRITE_FLAG_COPY);
+                tcp_output(c->pcb);
+                // First sample will arrive within 40 ms from accel_sample().
+
             } else {
                 c->tx_ptr       = resp->data;
                 c->tx_remaining = resp->length;
@@ -552,6 +604,7 @@ static void http_err(void *arg, err_t err) {
     if (c) {
         if (c == sse_conn)        sse_conn        = NULL;
         if (c == status_sse_conn) status_sse_conn = NULL;
+        if (c == accel_sse_conn)  accel_sse_conn  = NULL;
         c->pcb = NULL;
         conn_free(c);
     }
@@ -587,6 +640,8 @@ void http_server_init(void) {
         conn_free(&conns[i]);
     }
     listener = NULL;
+    namedAction(http_sse_keepalive);
+    namedAction(http_status_heartbeat);
 }
 
 void http_server_start(void) {
@@ -622,6 +677,7 @@ void http_server_stats(uint8_t *active, uint8_t *idle) {
 void http_server_stop(void) {
     sse_conn        = NULL;    // cleared before conn_close loop to avoid double-clear
     status_sse_conn = NULL;
+    accel_sse_conn  = NULL;
     // Close all active connections.
     for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++) {
         if (conns[i].state != HTTP_IDLE) {

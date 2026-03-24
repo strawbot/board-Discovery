@@ -15,6 +15,9 @@ void show_telnet(void);     // Telnet server state and active connections
 // usb
 void show_usb(void);        // USB connection state and CDC line status
 
+// accelerometer
+void show_acc(void);        // Chip type, WHO_AM_I, pitch, roll, sample and tap counts
+
 // system
 void show_sys(void);        // Clock frequencies and uptime
 void do_reboot(void);       // NVIC system reset

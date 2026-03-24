@@ -28,6 +28,11 @@ NAMES(wordnames)
 	NAME("show-telnet")		//  show Telnet server state and active connections
 	NAME("show-stats")		//  show packet stats
 	NAME("show-usb")		//  show USB connection state and CDC line status
+	NAME("show-acc")		//  show accelerometer type, orientation (pitch/roll) and tap count
+	NAME("accon")		//  start accerloeromete
+	NAME("accoff")		//  stop accelerometer
+	NAME("accel_init")		//  init accelerometer interface
+	NAME("accread")		//  ( a n ) read n registers starting at a
 	NAME("show-sys")		//  show system info: clock frequencies and uptime
 	NAME("show-timer")		//  show delta timer state and UTC tick counter
 	NAME("reboot")		//  reboot the device via NVIC system reset
@@ -165,6 +170,11 @@ void show_http(void);
 void show_telnet(void);
 void show_stats(void);
 void show_usb(void);
+void show_acc(void);
+void accel_start(void);
+void accel_stop(void);
+void accel_init(void);
+void accel_regs_read(void);
 void show_sys(void);
 void show_timer(void);
 void do_reboot(void);
@@ -302,6 +312,11 @@ BODIES(wordbodies)
 	BODY(show_telnet)
 	BODY(show_stats)
 	BODY(show_usb)
+	BODY(show_acc)
+	BODY(accel_start)
+	BODY(accel_stop)
+	BODY(accel_init)
+	BODY(accel_regs_read)
 	BODY(show_sys)
 	BODY(show_timer)
 	BODY(do_reboot)

@@ -20,6 +20,14 @@ Words // usb
 	show-usb		show_usb		// show USB connection state and CDC line status
 End
 
+Words // accelerometer
+	show-acc		show_acc		// show accelerometer type, orientation (pitch/roll) and tap count
+	accon			accel_start		// start accerloeromete
+	accoff			accel_stop		// stop accelerometer
+	accel_init		accel_init		// init accelerometer interface
+	accread			accel_regs_read	// ( a n ) read n registers starting at a
+End
+
 Words // system
 	show-sys		show_sys		// show system info: clock frequencies and uptime
 	show-timer		show_timer		// show delta timer state and UTC tick counter

@@ -40,6 +40,8 @@ void output();
 #define CLOCK_MHZ 168u
 #define ONE_SECOND (10000)	// for UTC 100us res
 #define TE_SECOND ONE_SECOND    // for Delta timer
+#define get_utc() ntp_get_utc()  // utc in seconds
+uint32_t ntp_get_utc(void);
 
 // Hi res time measurements
 // 168 MHz clock ticks; wraps after 25 seconds; 5.95 ns resolution

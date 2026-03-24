@@ -28,4 +28,10 @@ void http_server_stats(uint8_t *active, uint8_t *idle);
 // update without the browser having to poll.
 void http_status_push(void);
 
+// Push accelerometer orientation and tap events to any connected
+// /accel_stream SSE client.  No-op if no client is listening.
+// pitch10 and roll10 are angles in tenths of a degree (e.g. 123 = 12.3°).
+// tap is true for one call immediately after a tap is detected, then false.
+void http_accel_push(int16_t pitch10, int16_t roll10, bool tap);
+
 #endif // HTTP_SERVER_H
