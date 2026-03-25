@@ -163,6 +163,7 @@ void help(void) {
     printif("over   ( n m - n m n ) copy 2nd data stack item to top of data stack\n");
     printif("pa   print actions in queue\n");
     printif("pi   ( - f ) return 32 bit value for pi\n");
+    printif("pins   show all pins and states\n");
     printif("play   play out events in event queue and restart recording\n");
     printif("pow   ( f m - f  ) calculate the power of f to m\n");
     printif("r   ( - n ) (R n - n ) copy the top item of the return stack onto the data stack\n");

@@ -21,8 +21,7 @@ void cii(void);
 
 // Words
 NAMES(wordnames)
-	NAME("show-eth")		//  show Ethernet link status, speed, duplex, PHY info and recovery stats
-	NAME("eth-recover")		//  force PHY soft-reset and MAC DMA restart (also runs automatically on TX hang)
+	NAME("show-eth")		//  show Ethernet link status, speed, duplex and PHY info
 	NAME("show-ip")		//  show IP address, gateway, netmask and DHCP state
 	NAME("show-net")		//  show LwIP network statistics: RX/TX counts, errors
 	NAME("show-http")		//  show HTTP server state and active connections
@@ -38,6 +37,7 @@ NAMES(wordnames)
 	NAME("show-timer")		//  show delta timer state and UTC tick counter
 	NAME("reboot")		//  reboot the device via NVIC system reset
 	NAME("show-cli")		//  display cli status
+	NAME("pins")		//  show all pins and states
 	NAME("help")		//  <filtering> print words with one line help; allow wild card <filtering>; parenthesis show ( args - results ) and precede the command; angle brackets show arguments that follow commands
 	NAME("words")		//  list all words in dictionary
 	NAME("dup")		//  ( n - n n ) make a copy of the top data stack item
@@ -165,7 +165,6 @@ NAMES(wordnames)
 END_NAMES
 
 void show_ethernet(void);
-void eth_recovery_action(void);
 void show_ip(void);
 void show_net(void);
 void show_http(void);
@@ -181,6 +180,7 @@ void show_sys(void);
 void show_timer(void);
 void do_reboot(void);
 void show_cli(void);
+void gpio_dump_all(void);
 void help(void);
 void words(void);
 void dup(void);
@@ -308,7 +308,6 @@ void nap_for(void);
 
 BODIES(wordbodies)
 	BODY(show_ethernet)
-	BODY(eth_recovery_action)
 	BODY(show_ip)
 	BODY(show_net)
 	BODY(show_http)
@@ -324,6 +323,7 @@ BODIES(wordbodies)
 	BODY(show_timer)
 	BODY(do_reboot)
 	BODY(show_cli)
+	BODY(gpio_dump_all)
 	BODY(help)
 	BODY(words)
 	BODY(dup)

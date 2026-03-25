@@ -33,6 +33,7 @@ Words // system
 	show-timer		show_timer		// show delta timer state and UTC tick counter
 	reboot			do_reboot		// reboot the device via NVIC system reset
 	show-cli		show_cli		// display cli status
+	pins			gpio_dump_all	// show all pins and states
 End
 
 Include ../../TimbreOS/WordLists/clibindings.txt

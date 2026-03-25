@@ -24,6 +24,8 @@
 #include "ntp_sync.h"
 #include "network_init.h"
 
+#include "tusb.h"           // tud_ready() — USB host connection state
+
 #include "lwip/netif.h"
 #include "lwip/timeouts.h"
 #include "lwip/ip_addr.h"
@@ -156,6 +158,8 @@ static void link_callback(struct netif *netif) {
         apply_static_ip();
         servers_start();
         kick_lwip_timer();
+        // Assert Ethernet as the default route now that its link is up.
+        network_update_default_route();
         // Restart SNTP unconditionally via kick (stop + reinit) rather than
         // the conditional ntp_sync_start().  This ensures the SNTP PCB is
         // always fresh on link-up, including after eth_recovery_action() which
@@ -178,6 +182,15 @@ static void link_callback(struct netif *netif) {
         // the refreshed socket never receives responses.  ntp_sync_kick() on
         // link-up will restart it with a new PCB.
         ntp_sync_stop();
+        // Fall back to USB as the default route if a host is connected.
+        // This lets NTP reach the internet via USB host IP forwarding while
+        // Ethernet is absent.  If USB is also unavailable, the default stays
+        // on Ethernet and NTP will simply retry when connectivity returns.
+        network_update_default_route();
+        if (tud_ready()) {
+            // USB host can forward internet traffic — keep SNTP alive.
+            ntp_sync_start();
+        }
         // Push link-down status to any connected status SSE client.
         http_status_push();
     }
@@ -212,6 +225,33 @@ static void kick_lwip_timer(void) {
     if (next != (Long)SYS_TIMEOUTS_SLEEPTIME_INFINITE) {
         after(next, lwip_timeout_action);
     }
+}
+
+// ── network_update_default_route ──────────────────────────────────────────────
+// Sets the lwIP default netif — the interface used for all internet-bound
+// traffic (NTP, DNS, anything not matching a directly-connected subnet).
+//
+// Priority:
+//   1. Ethernet link up               → always preferred (lower latency,
+//                                       no dependency on host IP forwarding)
+//   2. Ethernet down + USB host ready → fall back to USB; the host must have
+//                                       IP forwarding enabled for this to reach
+//                                       the internet (macOS Internet Sharing,
+//                                       Linux ip_forward=1, etc.)
+//   3. Neither available              → no change; NTP will fail gracefully
+//                                       and retry on its schedule.
+//
+// Call this after any change that may affect which interface can reach the
+// internet: Ethernet link-up, link-down, and USB host enumeration.
+
+void network_update_default_route(void)
+{
+    if (netif_is_link_up(&gnetif)) {
+        netif_set_default(&gnetif);
+    } else if (tud_ready()) {
+        netif_set_default(&usb_netif);
+    }
+    // else: no usable route — leave current default unchanged.
 }
 
 // ── eth_status ────────────────────────────────────────────────────────────────

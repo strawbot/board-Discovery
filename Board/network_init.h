@@ -8,4 +8,9 @@
 // The returned pointer is valid until the next call (uses an internal static buffer).
 const char *eth_status(void);
 
+// network_update_default_route — pick the best available internet-facing netif.
+// Prefers Ethernet when its link is up; falls back to USB when a host is
+// connected and Ethernet is down.  Call on every interface state change.
+void network_update_default_route(void);
+
 #endif // NETWORK_INIT_H

@@ -44,6 +44,8 @@
 #include "usb_dhcpd.h"
 #include "http_server.h"
 #include "telnet_server.h"
+#include "network_init.h"   // network_update_default_route()
+#include "ntp_sync.h"       // ntp_sync_kick()
 
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
@@ -131,10 +133,19 @@ static int pbuf_is_dhcp(struct pbuf *p) {
 // ── tud_network_init_cb — USB host reset or re-enumeration ───────────────────
 
 void tud_network_init_cb(void) {
-    // Our LwIP netif stays registered regardless of USB host state.
-    // Push an updated status event — the USB host has just (re-)enumerated the
-    // NCM interface, so the connection state visible in the browser should
-    // reflect tud_ready() / tud_connected() immediately.
+    // USB host has just (re-)enumerated the NCM interface.
+    //
+    // Update the lwIP default route: if Ethernet is down, switch the default
+    // netif to USB so that NTP and DNS packets are routed via the USB host's
+    // IP forwarding instead of being silently dropped.  If Ethernet is up,
+    // this is a no-op — Ethernet stays preferred.
+    network_update_default_route();
+
+    // Kick SNTP so it picks up the new route immediately rather than waiting
+    // for its next scheduled poll.
+    ntp_sync_kick();
+
+    // Push updated USB connection state to any open status SSE client.
     http_status_push();
 }
 
