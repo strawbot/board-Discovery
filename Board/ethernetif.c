@@ -360,7 +360,7 @@ err_t ethernetif_init(struct netif *netif) {
                       | NETIF_FLAG_ETHERNET;
 
                       // In ethernetif_init or after netif_add:
-memcpy(dbg_hwaddr, netif->hwaddr, 6);
+memcpy((void *)dbg_hwaddr, netif->hwaddr, 6);
 
     return ERR_OK;
 }
@@ -523,7 +523,7 @@ bool ethernetif_input(struct netif *netif) {
                 if (pl[23] == 0x01U) { 
                     eth_rx_icmp_count++;
                     dbg_icmp_fl = framelength;   // ← framelength after the -= 4 subtraction
-                    memcpy(dbg_icmp_dst_mac, pl, 6);  // b[0..5] = dst MAC
+                    memcpy((void *)dbg_icmp_dst_mac, pl, 6);  // b[0..5] = dst MAC
                 } // ICMP frames
             }
                                              // byte 14 = first byte of IP header (should be 0x45)
