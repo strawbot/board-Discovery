@@ -13,7 +13,9 @@ void button_init(void);
 // button_exti0_isr — ISR trampoline for B1 (PA0 / EXTI0 rising edge).
 // Must be called from EXTI0_IRQHandler after the EXTI pending flag is cleared,
 // only when EXTI0 is currently routed to PA0 (see SYSCFG EXTICR dispatch in
-// stm32f4xx_it.c).  Debounces in ISR context; defers work to the event loop.
+// stm32f4xx_it.c).
+// Disables EXTI0_IRQn immediately then defers all work to the event loop via
+// later(); no debounce logic runs in ISR context.
 void button_exti0_isr(void);
 
 #endif // BUTTON_H

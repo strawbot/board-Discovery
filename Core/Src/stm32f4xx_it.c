@@ -294,27 +294,16 @@ void USART6_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 
 /**
-  * @brief  EXTI line 0 interrupt — shared by two sources:
-  *           PA0  B1 user button  (EXTI0 routed to PORTA, default)
-  *           PE0  MEMS INT1       (EXTI0 re-routed to PORTE by production LIS3DSH)
-  *
-  *         The current routing is determined at runtime by reading
-  *         SYSCFG_EXTICR1[3:0]: 0x0 = PA (button), 0x4 = PE (MEMS INT1).
-  *         This lets both drivers install into the same vector without
-  *         coordination beyond SYSCFG being updated before NVIC is armed.
+  * @brief  EXTI line 0 interrupt — B1 user button on PA0 (rising edge).
+  *         Clears the EXTI pending flag then hands off to button_exti0_isr(),
+  *         which disables EXTI0_IRQn and defers all work to the event loop.
   */
 void EXTI0_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI0_IRQn 0 */
   if (LL_EXTI_IsActiveFlag_0_31(LL_EXTI_LINE_0)) {
     LL_EXTI_ClearFlag_0_31(LL_EXTI_LINE_0);
-    /* Dispatch: SYSCFG EXTICR1 bits[3:0] identify the active GPIO port. */
-    if ((SYSCFG->EXTICR[0] & 0xFu) == 0x0u) {   /* 0x0 = PA → B1 button */
-      button_exti0_isr();
-    } else {                                       /* 0x4 = PE → MEMS INT1 */
-      void accel_int1_isr(void);
-      accel_int1_isr();
-    }
+    button_exti0_isr();
   }
   /* USER CODE END EXTI0_IRQn 0 */
 }

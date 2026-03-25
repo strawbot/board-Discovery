@@ -33,6 +33,8 @@
 #include "tea.h"
 #include "accel.h"
 #include "button.h"
+
+void ADC_Driver_Init();   // once, after clocks are up
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -106,6 +108,7 @@ int main(void)
   MX_ADC1_Init();
   MX_ADC2_Init();
   MX_ADC3_Init();
+  ADC_Driver_Init();
   /* USER CODE BEGIN 2 */
 void init_tea();
 void init_cli();

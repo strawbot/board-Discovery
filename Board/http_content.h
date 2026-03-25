@@ -55,7 +55,10 @@ static const char index_html_data[] =
          "padding:4px 6px;font-family:monospace;font-size:13px}"
     "#btn{background:#333;color:#0f0;border:1px solid #444;padding:4px 12px;cursor:pointer}"
     "#ac-cv{width:100%;height:360px;display:block;background:#111}"
-    "#ac-hud{font-size:12px;color:#666;padding:4px 0 0 2px}"
+    "#ac-hud{font-size:12px;color:#666;padding:4px 0 0 2px;display:flex;align-items:center;gap:10px}"
+    "#ac-zero{background:#222;color:#666;border:1px solid #444;padding:2px 8px;"
+             "cursor:pointer;font-family:monospace;font-size:12px}"
+    "#ac-zero:hover{color:#ccc}"
     "</style></head><body>"
     "<div class=\"tabs\">"
     "<button class=\"tab on\" onclick=\"sw('st',this)\">Active Robot</button>"
@@ -86,9 +89,12 @@ static const char index_html_data[] =
     "<div id=\"ac\" class=\"page\">"
     "<canvas id=\"ac-cv\"></canvas>"
     "<div id=\"ac-hud\">"
+    "<span>"
     "x:&thinsp;<span id=\"ac-x\">-</span>&ensp;"
     "y:&thinsp;<span id=\"ac-y\">-</span>&ensp;"
     "z:&thinsp;<span id=\"ac-z\">-</span>"
+    "</span>"
+    "<button id=\"ac-zero\" onclick=\"acZero()\">zero</button>"
     "</div>"
     "</div>"
 
@@ -135,7 +141,7 @@ static const char index_html_data[] =
 
     /* ── Board 3-D visualiser ── */
     /* AC — accelerometer/board namespace */
-    "var AC={es:null,ren:null,sc:null,cam:null,brd:null,topMat:null,lastData:0};"
+    "var AC={es:null,ren:null,sc:null,cam:null,brd:null,topMat:null,lastData:0,zeroInv:null};"
 
     "function acInit(){"
     "if(!window.THREE)return;"                              /* CDN not loaded */
@@ -197,13 +203,21 @@ static const char index_html_data[] =
     /* Y is up when the board is flat; quaternion handles any tilt.     */
     "var gx=d.x/1000,gy=d.y/1000,gz=d.z/1000;"
     "var gv=new THREE.Vector3(gx,gy,gz).normalize();"
-    "if(AC.brd){AC.brd.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),gv);}"
+    "var q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),gv);"
+    "if(AC.zeroInv)q.multiply(AC.zeroInv);"
+    "if(AC.brd)AC.brd.quaternion.copy(q);"
     "document.getElementById('ac-x').textContent=gx.toFixed(3);"
     "document.getElementById('ac-y').textContent=gy.toFixed(3);"
     "document.getElementById('ac-z').textContent=gz.toFixed(3);"
     "AC.lastData=Date.now();"
     "}catch(ex){}};"
     "AC.es.onerror=function(){};}"
+
+    /* acZero — capture inverse of current board quaternion as the reference.  */
+    /* Subsequent orientations are displayed relative to this baseline, so    */
+    /* whatever tilt exists when Zero is pressed maps to the model flat.      */
+    "function acZero(){"
+    "if(AC.brd)AC.zeroInv=new THREE.Quaternion().copy(AC.brd.quaternion).conjugate();}"
 
     "function acDisconnect(){"
     "if(AC.es){AC.es.close();AC.es=null;}}"

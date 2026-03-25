@@ -1,4 +1,4 @@
-// accel.c — LIS302DL / LIS3DSH accelerometer driver for STM32F4DISCOVERY
+// accel.c — LIS3DSH accelerometer driver for STM32F4DISCOVERY
 //
 // Hardware (STM32F4DISCOVERY schematic):
 //   SPI1 via LL: SCK=PA5  MISO=PA6  MOSI=PA7  CS=PE3
@@ -12,48 +12,27 @@
 //   continues to run, so the MAC DMA clock is never interrupted.
 //   CS (PE3) is managed manually as GPIO.
 //
-// Chip detection (same SPI pins, same CS on all Discovery board revisions):
-//   WHO_AM_I register (0x0F):
-//     0x3F → LIS3DSH (production)      — post-~2012 boards, 16-bit output, FIFO
-//     0x01 → LIS3DSH (early silicon)   — pre-production / engineering sample;
-//                                         "DSH" chip marking; same register map
-//                                         as 0x3F, only the silicon ID differs
-//     0x3B → LIS302DL                  — oldest boards, 8-bit output, no FIFO
+// Chip (same SPI pins and CS on all STM32F4DISCOVERY revisions):
+//   WHO_AM_I (0x0F): 0x3F = LIS3DSH production, 0x01 = early/engineering sample.
+//   Register map is identical; silicon ID is the only difference.
 //
-// Timing architecture:
-//
-//   LIS3DSH production (WHO_AM_I=0x3F) — hardware FIFO driven:
-//     LIS3DSH runs at 100 Hz ODR, FIFO in stream mode, watermark=25 samples.
-//     When 25 samples accumulate the chip asserts INT1 (PE0).
-//     EXTI0_IRQHandler clears the flag and calls later(accel_batch_process).
-//     accel_batch_process() (event-loop context):
-//       1. Isolates PHY, switches PA7 to AF5 (SPI1_MOSI).
-//       2. Reads FIFO_SRC to get count; drains all samples in one burst.
-//       3. Restores PA7 to AF11 (ETH_CRS_DV), de-isolates PHY.
-//       4. Runs IIR filter and tap check across all samples.
-//       5. Calls http_accel_push() if orientation changed or tap detected.
-//     Ethernet is disrupted for ≈ 344 µs once every 250 ms (0.14%).
-//
-//   LIS3DSH early (WHO_AM_I=0x01) — timer-polled FIFO:
-//     Same FIFO/stream/watermark configuration, but INT1 on this engineering-
-//     sample silicon is unreliable — the pin stays low after one or two firings.
-//     A 100 ms repeating timer fires accel_lis3dsh_poll() instead, which calls
-//     accel_batch_process().  At 100 Hz ODR roughly 10 samples accumulate per
-//     poll; FIFO_SRC is checked first so an empty FIFO is a no-op.
-//     EXTI0 is never armed for this chip variant.
-//
-//   LIS302DL — timer-driven (fallback, older boards):
-//     in(msec(40), accel_read_isr) fires from the timer interrupt.  The ISR
-//     only reschedules itself (while accel_running is true) and defers real
-//     work via later(accel_process_one).
-//     accel_process_one() (event-loop context) performs the same PHY-isolate /
-//     single-sample SPI read / restore sequence, then pushes.
+// Timing architecture — soft-scheduled FIFO poll:
+//   LIS3DSH runs at 100 Hz ODR, FIFO in stream mode, watermark=25 samples.
+//   accel_poll() fires from after() every ~100 ms and calls accel_batch_process().
+//   At 100 Hz ODR roughly 10 samples accumulate per poll; FIFO_SRC is checked
+//   first so an empty FIFO is a no-op.  The FIFO absorbs any jitter in the
+//   poll interval — the MCU timing is soft, the chip timing is hard.
+//   accel_batch_process() (event-loop context):
+//     1. Isolates PHY, switches PA7 to AF5 (SPI1_MOSI).
+//     2. Reads FIFO_SRC; drains all samples in one burst.
+//     3. Restores PA7 to AF11 (ETH_CRS_DV), de-isolates PHY.
+//     4. Runs adaptive IIR filter and tap check across all samples.
+//     5. Calls http_accel_push() if orientation changed or tap detected.
+//   Ethernet is disrupted for ≈ 344 µs per poll (0.03% at 100 ms interval).
 //
 // Enable / disable:
-//   accel_start()  — arms the hardware interrupt (LIS3DSH) or the timer
-//                    (LIS302DL) and sets accel_running = true.
-//   accel_stop()   — disables EXTI0 (LIS3DSH) or clears accel_running
-//                    (LIS302DL); the next ISR invocation will not reschedule.
+//   accel_start() — writes FIFO config registers, schedules first accel_poll().
+//   accel_stop()  — clears accel_running; accel_poll() sees the flag and stops.
 //
 // Push policy:
 //   http_accel_push() is called only when |Δpitch| or |Δroll| > 1.0°,
@@ -212,26 +191,9 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 // Sensitivity at FS=±2 g: 2 g / 32768 LSB.
 #define LIS3DSH_SENS  0.000061f
 
-// ── LIS302DL registers (WHO_AM_I = 0x3B) ─────────────────────────────────────
-
-#define LIS302DL_CTRL_REG1  0x20   // PD[5], FS[4], ZEN[2], YEN[1], XEN[0]
-#define LIS302DL_OUT_X      0x29   // 8-bit signed, non-contiguous
-
-// CTRL_REG1: PD=1 (active), FS=0 (±2 g), all axes  →  0x47
-#define LIS302DL_CTRL1_VAL  0x47u
-
-// Burst from 0x29 yields 5 bytes; valid data at indices 0 (X), 2 (Y), 4 (Z).
-#define LIS302DL_BURST_CMD  (0x80u | 0x40u | LIS302DL_OUT_X)
-
-// Sensitivity at FS=±2 g: 18 mg/digit.
-#define LIS302DL_SENS  0.018f
-
-// Sample period for LIS302DL timer path (ms).
-#define SAMPLE_MS     40u
-
-// Poll interval for LIS3DSH early-chip timer path (ms).
-// At 100 Hz ODR, ~25 samples accumulate per 250 ms interval.
-#define ACCEL_POLL_MS 250u
+// Poll interval (ms): at 100 Hz ODR ~10 samples accumulate per poll.
+// FIFO absorbs jitter — the MCU timing is soft, the chip timing is hard.
+#define ACCEL_POLL_MS 100
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -239,7 +201,6 @@ static accel_type_t accel_type  = ACCEL_NONE;
 static uint8_t      detected_id = 0;
 
 // Batch buffer: holds up to 32 LIS3DSH samples (32 × 6 bytes).
-// Also reused for a single LIS302DL sample (5 bytes).
 static uint8_t raw_batch[32u * 6u];
 
 // IIR filter state and derived angles — written only by event-loop functions.
@@ -255,7 +216,7 @@ static uint32_t tap_count    = 0;
 static uint32_t sample_count = 0;
 
 // Task running state.  Set by accel_start(), cleared by accel_stop().
-// The LIS302DL ISR checks this before rescheduling.
+// accel_poll() checks this before rescheduling.
 static volatile bool accel_running = false;
 
 // IIR coefficients — adaptive based on whether the board is moving.
@@ -367,25 +328,6 @@ static void accel_batch_process(void)
     accel_maybe_push();
 }
 
-// ── LIS302DL path: timer ISR + single-sample event-loop ──────────────────────
-
-static void accel_process_one(void)
-{
-    uint32_t bmcr = accel_spi_begin();
-    lis_read_burst(LIS302DL_BURST_CMD, raw_batch, 5);
-    accel_spi_end(bmcr);
-
-    float ax = (float)(int8_t)raw_batch[0] * LIS302DL_SENS;
-    float ay = (float)(int8_t)raw_batch[2] * LIS302DL_SENS;
-    float az = (float)(int8_t)raw_batch[4] * LIS302DL_SENS;
-
-    tap_pending = false;
-    accel_update_sample(ax, ay, az);
-    sample_count++;
-
-    accel_maybe_push();
-}
-
 void accel_regs_read(void) // ( a n )
 {
     Byte n = ret();
@@ -399,27 +341,13 @@ void accel_regs_read(void) // ( a n )
     hbytes(data, n);
 }
 
-static void accel_read_isr(void)
+// Soft-scheduled FIFO poll.  Reschedules itself via after() while running;
+// stops automatically when accel_running is cleared by accel_stop().
+static void accel_poll(void)
 {
-    if (!accel_running) return;     // accel_stop() clears this; skip reschedule
-    in(msec(SAMPLE_MS), accel_read_isr);
-    later(accel_process_one);
-}
-
-// Timer-based FIFO drain for early LIS3DSH (WHO_AM_I=0x01).
-// INT1 is unreliable on engineering-sample silicon; this replaces EXTI0.
-static void accel_lis3dsh_poll(void)
-{
-    if (!accel_running) return;     // accel_stop() clears this; stop rescheduling
-    in(msec(ACCEL_POLL_MS), accel_lis3dsh_poll);
-    later(accel_batch_process);
-}
-
-// ── INT1 ISR trampoline (LIS3DSH FIFO path) ──────────────────────────────────
-
-void accel_int1_isr(void)
-{
-    later(accel_batch_process);
+    if (!accel_running) return;
+    after(msec(ACCEL_POLL_MS), accel_poll);
+    accel_batch_process();
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -431,8 +359,7 @@ void accel_init(void)
     static bool once = false;
     if (once == false) {
         once = true;
-        namedAction(accel_read_isr);
-        namedAction(accel_lis3dsh_poll);
+        namedAction(accel_poll);
     }
 
     CS_HIGH();
@@ -449,9 +376,6 @@ void accel_init(void)
         accel_type = ACCEL_LIS3DSH;
         lis_write(LIS3DSH_CTRL_REG4, LIS3DSH_CTRL4_VAL);   // 100 Hz, BDU, all axes
         lis_write(LIS3DSH_CTRL_REG5, LIS3DSH_CTRL5_VAL);   // ±2 g, 800 Hz AA
-    } else if (detected_id == 0x3Bu) {
-        accel_type = ACCEL_LIS302DL;
-        lis_write(LIS302DL_CTRL_REG1, LIS302DL_CTRL1_VAL); // active, ±2 g, all axes
     } else {
         accel_type = ACCEL_NONE;
     }
@@ -464,54 +388,21 @@ void accel_start(void)
     if (!initialized)
         accel_init();
 
+    if (accel_type != ACCEL_LIS3DSH) return;   // no recognised chip
+
+    uint32_t bmcr = accel_spi_begin();
+    lis_write(LIS3DSH_CTRL_REG6,  LIS3DSH_CTRL6_VAL);     // FIFO_EN | WTM_EN | ADD_INC
+    lis_write(LIS3DSH_FIFO_CTRL,  LIS3DSH_FIFO_CTRL_VAL); // stream + WTM=25
+    accel_spi_end(bmcr);
+
     accel_running = true;
-
-    if (accel_type == ACCEL_LIS3DSH) {
-        uint32_t bmcr = accel_spi_begin();
-        lis_write(LIS3DSH_CTRL_REG6,  LIS3DSH_CTRL6_VAL);    // FIFO_EN | WTM_EN | ADD_INC
-        lis_write(LIS3DSH_FIFO_CTRL,  LIS3DSH_FIFO_CTRL_VAL);// stream + WTM=25
-        accel_spi_end(bmcr);
-
-        if (detected_id == 0x01u) {
-            // Early chip: INT1 unreliable — use a repeating timer to drain the FIFO.
-            in(msec(ACCEL_POLL_MS), accel_lis3dsh_poll);
-        } else {
-            // Production chip: re-route EXTI0 from PA0 (button) to PE0 (MEMS INT1).
-            // Disable NVIC before changing the routing to prevent a spurious
-            // button edge from firing during the transition.
-            HAL_NVIC_DisableIRQ(EXTI0_IRQn);
-            LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORTE, LL_SYSCFG_EXTI_LINE0);
-            LL_EXTI_InitTypeDef exti = {0};
-            exti.Line_0_31   = LL_EXTI_LINE_0;
-            exti.LineCommand = ENABLE;
-            exti.Mode        = LL_EXTI_MODE_IT;
-            exti.Trigger     = LL_EXTI_TRIGGER_RISING;
-            LL_EXTI_Init(&exti);
-            HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
-            HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-        }
-
-    } else {
-        // LIS302DL: timer-driven
-        in(msec(SAMPLE_MS), accel_read_isr);
-    }
+    after(msec(ACCEL_POLL_MS), accel_poll);
 }
 
 void accel_stop(void)
 {
     accel_running = false;
-    if (accel_type == ACCEL_LIS3DSH && detected_id != 0x01u) {
-        // Production chip: disable NVIC, then re-route EXTI0 back to PA0
-        // so the B1 button interrupt is restored.  The EXTI peripheral
-        // mode/trigger are still configured for rising-edge IT from
-        // button_init(), so only the SYSCFG routing and NVIC need updating.
-        HAL_NVIC_DisableIRQ(EXTI0_IRQn);
-        LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORTA, LL_SYSCFG_EXTI_LINE0);
-        HAL_NVIC_SetPriority(EXTI0_IRQn, 6, 0);
-        HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-    }
-    // Early LIS3DSH: accel_lis3dsh_poll() sees accel_running==false and stops.
-    // LIS302DL:      accel_read_isr() sees accel_running==false and stops.
+    // accel_poll() sees the cleared flag on its next fire and does not reschedule.
 }
 
 bool accel_is_running(void) { return accel_running; }
@@ -524,19 +415,13 @@ void show_acc(void)
 {
     // ── Chip and task state ──
     print("Accel:   ");
-    switch (accel_type) {
-        case ACCEL_LIS3DSH:
-            print(detected_id == 0x01u ? "LIS3DSH early" : "LIS3DSH");
-            print(" (FIFO/INT1, 100 Hz ODR, WTM=");
-            printDec(LIS3DSH_FIFO_WTM);
-            print(")");
-            break;
-        case ACCEL_LIS302DL:
-            print("LIS302DL (timer, 25 Hz)");
-            break;
-        default:
-            print("not found");
-            break;
+    if (accel_type == ACCEL_LIS3DSH) {
+        print(detected_id == 0x01u ? "LIS3DSH early" : "LIS3DSH");
+        print(" (FIFO poll, 100 Hz ODR, WTM=");
+        printDec(LIS3DSH_FIFO_WTM);
+        print(")");
+    } else {
+        print("not found");
     }
     print("  WHO_AM_I=0x"); dotnb(2, 2, detected_id, 16); printCr();
 
@@ -545,23 +430,7 @@ void show_acc(void)
         print("not started"); printCr();
         return;
     }
-    if (!accel_running) {
-        print("stopped"); printCr();
-    } else if (accel_type == ACCEL_LIS3DSH) {
-        if (detected_id == 0x01u) {
-            // Early chip uses timer poll; EXTI0 is intentionally not armed.
-            print("running (timer poll, ");
-            printDec(ACCEL_POLL_MS);
-            print(" ms)");
-        } else {
-            // Production chip: cross-check the NVIC IRQ enable bit.
-            print(NVIC_GetEnableIRQ(EXTI0_IRQn) ? "running (EXTI0 enabled)"
-                                                 : "running (EXTI0 disabled — stalled)");
-        }
-        printCr();
-    } else {
-        print("running (timer)"); printCr();
-    }
+    print(accel_running ? "running" : "stopped"); printCr();
 
     // ── SPI1 bus status ──
     print("SPI1:    ");
