@@ -22,7 +22,7 @@
 //
 // Timing architecture:
 //
-//   LIS3DSH — hardware FIFO driven (preferred path):
+//   LIS3DSH production (WHO_AM_I=0x3F) — hardware FIFO driven:
 //     LIS3DSH runs at 100 Hz ODR, FIFO in stream mode, watermark=25 samples.
 //     When 25 samples accumulate the chip asserts INT1 (PE0).
 //     EXTI0_IRQHandler clears the flag and calls later(accel_batch_process).
@@ -33,6 +33,14 @@
 //       4. Runs IIR filter and tap check across all samples.
 //       5. Calls http_accel_push() if orientation changed or tap detected.
 //     Ethernet is disrupted for ≈ 344 µs once every 250 ms (0.14%).
+//
+//   LIS3DSH early (WHO_AM_I=0x01) — timer-polled FIFO:
+//     Same FIFO/stream/watermark configuration, but INT1 on this engineering-
+//     sample silicon is unreliable — the pin stays low after one or two firings.
+//     A 100 ms repeating timer fires accel_lis3dsh_poll() instead, which calls
+//     accel_batch_process().  At 100 Hz ODR roughly 10 samples accumulate per
+//     poll; FIFO_SRC is checked first so an empty FIFO is a no-op.
+//     EXTI0 is never armed for this chip variant.
 //
 //   LIS302DL — timer-driven (fallback, older boards):
 //     in(msec(40), accel_read_isr) fires from the timer interrupt.  The ISR
@@ -189,11 +197,11 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 
 // CTRL_REG4: ODR=0110b (100 Hz), BDU=1, all axes  →  0x6F
 // CTRL_REG5: BW=800 Hz, FS=±2 g (defaults)        →  0x00
-// CTRL_REG6: FIFO_EN=1, WTM_EN=1                  →  0x60
+// CTRL_REG6: FIFO_EN=1, WTM_EN=1, ADD_INC=1       →  0x70
 // FIFO_CTRL: Stream mode (FMODE=010), watermark=25 →  0x59
 #define LIS3DSH_CTRL4_VAL     0x6Fu
 #define LIS3DSH_CTRL5_VAL     0x00u
-#define LIS3DSH_CTRL6_VAL     (0x40u | 0x20u)          // FIFO_EN | WTM_EN
+#define LIS3DSH_CTRL6_VAL     (0x40u | 0x20u | 0x10u)  // FIFO_EN | WTM_EN | ADD_INC
 #define LIS3DSH_FIFO_CTRL_VAL ((0x02u << 5) | 25u)     // stream + WTM=25
 
 #define LIS3DSH_FIFO_WTM      25u  // samples per batch → 4 Hz push rate at 100 Hz ODR
@@ -219,7 +227,11 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 #define LIS302DL_SENS  0.018f
 
 // Sample period for LIS302DL timer path (ms).
-#define SAMPLE_MS  40u
+#define SAMPLE_MS     40u
+
+// Poll interval for LIS3DSH early-chip timer path (ms).
+// At 100 Hz ODR, ~10 samples accumulate per 100 ms interval.
+#define ACCEL_POLL_MS 100u
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -303,7 +315,13 @@ static void accel_batch_process(void)
 
     uint8_t fifo_src = lis_read(LIS3DSH_FIFO_SRC);
     uint8_t count    = fifo_src & 0x1Fu;   // FSS[4:0]
-    if (count == 0) count = 32u;           // FSS=0 when FIFO exactly full
+    if (count == 0) {
+        if (fifo_src & 0x20u) {            // EMPTY bit: nothing to drain
+            accel_spi_end(bmcr);
+            return;
+        }
+        count = 32u;                       // FSS=0 when FIFO exactly full
+    }
 
     lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch, (uint16_t)(count * 6u));
 
@@ -361,6 +379,15 @@ static void accel_read_isr(void)
     later(accel_process_one);
 }
 
+// Timer-based FIFO drain for early LIS3DSH (WHO_AM_I=0x01).
+// INT1 is unreliable on engineering-sample silicon; this replaces EXTI0.
+static void accel_lis3dsh_poll(void)
+{
+    if (!accel_running) return;     // accel_stop() clears this; stop rescheduling
+    in(msec(ACCEL_POLL_MS), accel_lis3dsh_poll);
+    later(accel_batch_process);
+}
+
 // ── INT1 ISR trampoline (LIS3DSH FIFO path) ──────────────────────────────────
 
 void accel_int1_isr(void)
@@ -373,7 +400,11 @@ void accel_int1_isr(void)
 void accel_init(void)
 {
     static bool once = false;
-    if (once == false) { once = true; namedAction(accel_read_isr); }
+    if (once == false) {
+        once = true;
+        namedAction(accel_read_isr);
+        namedAction(accel_lis3dsh_poll);
+    }
 
     CS_HIGH();
 
@@ -405,19 +436,25 @@ void accel_start(void)
 
     if (accel_type == ACCEL_LIS3DSH) {
         uint32_t bmcr = accel_spi_begin();
-        lis_write(LIS3DSH_CTRL_REG6,  LIS3DSH_CTRL6_VAL);    // FIFO_EN | WTM_EN
+        lis_write(LIS3DSH_CTRL_REG6,  LIS3DSH_CTRL6_VAL);    // FIFO_EN | WTM_EN | ADD_INC
         lis_write(LIS3DSH_FIFO_CTRL,  LIS3DSH_FIFO_CTRL_VAL);// stream + WTM=25
         accel_spi_end(bmcr);
 
-        LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORTE, LL_SYSCFG_EXTI_LINE0);
-        LL_EXTI_InitTypeDef exti = {0};
-        exti.Line_0_31   = LL_EXTI_LINE_0;
-        exti.LineCommand = ENABLE;
-        exti.Mode        = LL_EXTI_MODE_IT;
-        exti.Trigger     = LL_EXTI_TRIGGER_RISING;
-        LL_EXTI_Init(&exti);
-        HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
-        HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+        if (detected_id == 0x01u) {
+            // Early chip: INT1 unreliable — use a repeating timer to drain the FIFO.
+            in(msec(ACCEL_POLL_MS), accel_lis3dsh_poll);
+        } else {
+            // Production chip: use FIFO watermark interrupt on INT1 (PE0 / EXTI0).
+            LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORTE, LL_SYSCFG_EXTI_LINE0);
+            LL_EXTI_InitTypeDef exti = {0};
+            exti.Line_0_31   = LL_EXTI_LINE_0;
+            exti.LineCommand = ENABLE;
+            exti.Mode        = LL_EXTI_MODE_IT;
+            exti.Trigger     = LL_EXTI_TRIGGER_RISING;
+            LL_EXTI_Init(&exti);
+            HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
+            HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+        }
 
     } else {
         // LIS302DL: timer-driven
@@ -428,9 +465,10 @@ void accel_start(void)
 void accel_stop(void)
 {
     accel_running = false;
-    if (accel_type == ACCEL_LIS3DSH)
+    if (accel_type == ACCEL_LIS3DSH && detected_id != 0x01u)
         HAL_NVIC_DisableIRQ(EXTI0_IRQn);
-    // LIS302DL: accel_read_isr will see accel_running==false and not reschedule.
+    // Early LIS3DSH: accel_lis3dsh_poll() sees accel_running==false and stops.
+    // LIS302DL:      accel_read_isr() sees accel_running==false and stops.
 }
 
 // ── show_acc ──────────────────────────────────────────────────────────────────
@@ -465,9 +503,16 @@ void show_acc(void)
     if (!accel_running) {
         print("stopped"); printCr();
     } else if (accel_type == ACCEL_LIS3DSH) {
-        // For LIS3DSH, cross-check the NVIC IRQ enable bit as the ground truth.
-        print(NVIC_GetEnableIRQ(EXTI0_IRQn) ? "running (EXTI0 enabled)"
-                                             : "running (EXTI0 disabled — stalled)");
+        if (detected_id == 0x01u) {
+            // Early chip uses timer poll; EXTI0 is intentionally not armed.
+            print("running (timer poll, ");
+            printDec(ACCEL_POLL_MS);
+            print(" ms)");
+        } else {
+            // Production chip: cross-check the NVIC IRQ enable bit.
+            print(NVIC_GetEnableIRQ(EXTI0_IRQn) ? "running (EXTI0 enabled)"
+                                                 : "running (EXTI0 disabled — stalled)");
+        }
         printCr();
     } else {
         print("running (timer)"); printCr();
