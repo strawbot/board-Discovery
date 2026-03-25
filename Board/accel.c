@@ -396,12 +396,14 @@ void accel_start(void)
     accel_spi_end(bmcr);
 
     accel_running = true;
+    http_accel_state(true);
     after(msec(ACCEL_POLL_MS), accel_poll);
 }
 
 void accel_stop(void)
 {
     accel_running = false;
+    http_accel_state(false);   // tell browser immediately — don't wait for timeout
     // accel_poll() sees the cleared flag on its next fire and does not reschedule.
 }
 

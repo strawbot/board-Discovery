@@ -227,6 +227,22 @@ void http_accel_push(int16_t gx1000, int16_t gy1000, int16_t gz1000, bool tap)
     }
 }
 
+// http_accel_state — public; called by accel.c when sampling starts or stops.
+// Sends {"run":1} or {"run":0} so the browser turns green/grey immediately.
+void http_accel_state(bool running)
+{
+    if (!accel_sse_conn || !accel_sse_conn->pcb) return;
+
+    char frame[32];
+    int n = snprintf(frame, sizeof(frame),
+        "data: {\"run\":%d}\n\n", running ? 1 : 0);
+
+    if (tcp_sndbuf(accel_sse_conn->pcb) >= (u16_t)n) {
+        tcp_write(accel_sse_conn->pcb, frame, (u16_t)n, TCP_WRITE_FLAG_COPY);
+        tcp_output(accel_sse_conn->pcb);
+    }
+}
+
 static const http_response_t *handle_accel_sse(const char *req, uint16_t len)
 {
     (void)req; (void)len;

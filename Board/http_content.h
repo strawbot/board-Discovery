@@ -199,6 +199,11 @@ static const char index_html_data[] =
     "AC.es.onmessage=function(e){"
     "try{"
     "var d=JSON.parse(e.data);"
+    /* {"run":0} — accel stopped; go grey immediately, skip orientation. */
+    "if(d.run===0){AC.lastData=0;return;}"
+    /* {"run":1} — accel started; prime lastData so colour turns green   */
+    /*             before the first orientation packet arrives.          */
+    "if(d.run===1){AC.lastData=Date.now();return;}"
     /* x/y/z are normalised gravity components × 1000 from firmware.   */
     /* Y is up when the board is flat; quaternion handles any tilt.     */
     "var gx=d.x/1000,gy=d.y/1000,gz=d.z/1000;"
@@ -217,7 +222,9 @@ static const char index_html_data[] =
     /* Subsequent orientations are displayed relative to this baseline, so    */
     /* whatever tilt exists when Zero is pressed maps to the model flat.      */
     "function acZero(){"
-    "if(AC.brd)AC.zeroInv=new THREE.Quaternion().copy(AC.brd.quaternion).conjugate();}"
+    "if(!AC.brd)return;"
+    "AC.zeroInv=new THREE.Quaternion().copy(AC.brd.quaternion).conjugate();"
+    "AC.brd.quaternion.set(0,0,0,1);}"   /* snap to flat immediately */
 
     "function acDisconnect(){"
     "if(AC.es){AC.es.close();AC.es=null;}}"

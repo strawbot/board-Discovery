@@ -35,4 +35,9 @@ void http_status_push(void);
 // tap is true for one call immediately after a tap is detected, then false.
 void http_accel_push(int16_t gx1000, int16_t gy1000, int16_t gz1000, bool tap);
 
+// Push a running-state change to any connected /accel_stream SSE client.
+// Sends {"run":1} or {"run":0} so the browser can update the board colour
+// immediately rather than waiting for the 2-second data-flow timeout.
+void http_accel_state(bool running);
+
 #endif // HTTP_SERVER_H
