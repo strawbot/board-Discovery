@@ -30,8 +30,9 @@ void http_status_push(void);
 
 // Push accelerometer orientation and tap events to any connected
 // /accel_stream SSE client.  No-op if no client is listening.
-// pitch10 and roll10 are angles in tenths of a degree (e.g. 123 = 12.3°).
+// gx1000 / gy1000 / gz1000 are normalised gravity components × 1000
+// (e.g. 1000 = 1.0 g).  Y is up when the board is flat on a desk.
 // tap is true for one call immediately after a tap is detected, then false.
-void http_accel_push(int16_t pitch10, int16_t roll10, bool tap);
+void http_accel_push(int16_t gx1000, int16_t gy1000, int16_t gz1000, bool tap);
 
 #endif // HTTP_SERVER_H

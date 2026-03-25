@@ -40,6 +40,10 @@ void accel_start(void);
 // accel_start() may be called again to resume.
 void accel_stop(void);
 
+// accel_is_running — true between a successful accel_start() and accel_stop().
+// Safe to call from any event-loop context.
+bool accel_is_running(void);
+
 // accel_int1_isr — ISR trampoline for LIS3DSH INT1 (EXTI0 on PE0).
 // Must be called from EXTI0_IRQHandler after the EXTI flag is cleared.
 // Defers all work to the event loop via later(); safe to call from interrupt.

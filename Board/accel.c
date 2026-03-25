@@ -230,8 +230,8 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 #define SAMPLE_MS     40u
 
 // Poll interval for LIS3DSH early-chip timer path (ms).
-// At 100 Hz ODR, ~10 samples accumulate per 100 ms interval.
-#define ACCEL_POLL_MS 100u
+// At 100 Hz ODR, ~25 samples accumulate per 250 ms interval.
+#define ACCEL_POLL_MS 250u
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -258,9 +258,15 @@ static uint32_t sample_count = 0;
 // The LIS302DL ISR checks this before rescheduling.
 static volatile bool accel_running = false;
 
-// IIR coefficient — α=0.15.
-// At 100 Hz ODR this gives a ~62 ms time constant.
-#define ALPHA        0.15f
+// IIR coefficients — adaptive based on whether the board is moving.
+// When stationary (|‖g‖ − 1g| < STILL_THRESH) the slower coefficient is used,
+// which suppresses the angular-noise amplification that appears near the flat
+// (horizontal) position: roll = atan2(−ax, az) has ∂roll/∂ax ≈ 57 °/g when
+// ax ≈ 0, so even modest X-axis noise becomes a large angle swing.
+// When the board is moved the fast coefficient restores quick tracking.
+#define ALPHA_MOVE   0.15f   // τ ≈  62 ms at 100 Hz — responsive during motion
+#define ALPHA_STILL  0.03f   // τ ≈ 330 ms at 100 Hz — quiet when stationary
+#define STILL_THRESH  0.1f   // |‖g‖ − 1g| > this → classify as in motion
 
 // Minimum angle change (degrees) that triggers an SSE push.
 #define ANGLE_THRESH 1.0f
@@ -275,11 +281,19 @@ static volatile bool accel_running = false;
 
 static void accel_update_sample(float ax, float ay, float az)
 {
-    ax_f += ALPHA * (ax - ax_f);
-    ay_f += ALPHA * (ay - ay_f);
-    az_f += ALPHA * (az - az_f);
-
     float mag_raw = sqrtf(ax*ax + ay*ay + az*az);
+
+    // Discard samples outside the physically plausible range.  Guards the IIR
+    // against occasional corrupted FIFO entries (seen on early-silicon SPI).
+    if (mag_raw < 0.3f || mag_raw > 2.5f) return;
+
+    // Adaptive time constant: slow when stationary, fast when moving.
+    float alpha = (fabsf(mag_raw - 1.0f) > STILL_THRESH) ? ALPHA_MOVE : ALPHA_STILL;
+
+    ax_f += alpha * (ax - ax_f);
+    ay_f += alpha * (ay - ay_f);
+    az_f += alpha * (az - az_f);
+
     float mag_flt = sqrtf(ax_f*ax_f + ay_f*ay_f + az_f*az_f);
     uint32_t now  = HAL_GetTick();
 
@@ -293,8 +307,19 @@ static void accel_update_sample(float ax, float ay, float az)
 
 static void accel_maybe_push(void)
 {
-    float pitch = atan2f(ay_f, sqrtf(ax_f*ax_f + az_f*az_f)) * (180.0f / 3.14159265f);
-    float roll  = atan2f(-ax_f, az_f)                         * (180.0f / 3.14159265f);
+    float mag = sqrtf(ax_f*ax_f + ay_f*ay_f + az_f*az_f);
+    if (mag < 0.1f) return;                 // no valid orientation without gravity
+
+    float gx = ax_f / mag, gy = ay_f / mag, gz = az_f / mag;
+
+    // Y-up angle formulas — on the STM32F4DISCOVERY the LIS3DSH Y axis is
+    // perpendicular to the PCB surface (ay ≈ +1 g when flat on a desk):
+    //   pitch = atan2(-gz, sqrt(gx²+gy²))   — positive nose-up
+    //   roll  = atan2( gx, sqrt(gy²+gz²))   — positive right-side-up
+    // Used only for change detection; the browser receives the raw gravity
+    // vector so it can orient the 3-D model without any axis-convention math.
+    float pitch = atan2f(-gz, sqrtf(gx*gx + gy*gy)) * (180.0f / 3.14159265f);
+    float roll  = atan2f( gx, sqrtf(gy*gy + gz*gz)) * (180.0f / 3.14159265f);
 
     bool changed = (fabsf(pitch - last_pitch) > ANGLE_THRESH) ||
                    (fabsf(roll  - last_roll)  > ANGLE_THRESH);
@@ -302,7 +327,9 @@ static void accel_maybe_push(void)
     tap_pending  = false;
 
     if (changed || tap) {
-        http_accel_push((int16_t)(pitch * 10.0f), (int16_t)(roll * 10.0f), tap);
+        http_accel_push((int16_t)(gx * 1000.0f),
+                        (int16_t)(gy * 1000.0f),
+                        (int16_t)(gz * 1000.0f), tap);
         if (changed) { last_pitch = pitch; last_roll = roll; }
     }
 }
@@ -396,9 +423,11 @@ void accel_int1_isr(void)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+static bool initialized = false;
 
 void accel_init(void)
 {
+    initialized = true;
     static bool once = false;
     if (once == false) {
         once = true;
@@ -432,6 +461,9 @@ void accel_init(void)
 
 void accel_start(void)
 {
+    if (!initialized)
+        accel_init();
+
     accel_running = true;
 
     if (accel_type == ACCEL_LIS3DSH) {
@@ -444,7 +476,10 @@ void accel_start(void)
             // Early chip: INT1 unreliable — use a repeating timer to drain the FIFO.
             in(msec(ACCEL_POLL_MS), accel_lis3dsh_poll);
         } else {
-            // Production chip: use FIFO watermark interrupt on INT1 (PE0 / EXTI0).
+            // Production chip: re-route EXTI0 from PA0 (button) to PE0 (MEMS INT1).
+            // Disable NVIC before changing the routing to prevent a spurious
+            // button edge from firing during the transition.
+            HAL_NVIC_DisableIRQ(EXTI0_IRQn);
             LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORTE, LL_SYSCFG_EXTI_LINE0);
             LL_EXTI_InitTypeDef exti = {0};
             exti.Line_0_31   = LL_EXTI_LINE_0;
@@ -465,11 +500,21 @@ void accel_start(void)
 void accel_stop(void)
 {
     accel_running = false;
-    if (accel_type == ACCEL_LIS3DSH && detected_id != 0x01u)
+    if (accel_type == ACCEL_LIS3DSH && detected_id != 0x01u) {
+        // Production chip: disable NVIC, then re-route EXTI0 back to PA0
+        // so the B1 button interrupt is restored.  The EXTI peripheral
+        // mode/trigger are still configured for rising-edge IT from
+        // button_init(), so only the SYSCFG routing and NVIC need updating.
         HAL_NVIC_DisableIRQ(EXTI0_IRQn);
+        LL_SYSCFG_SetEXTISource(LL_SYSCFG_EXTI_PORTA, LL_SYSCFG_EXTI_LINE0);
+        HAL_NVIC_SetPriority(EXTI0_IRQn, 6, 0);
+        HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+    }
     // Early LIS3DSH: accel_lis3dsh_poll() sees accel_running==false and stops.
     // LIS302DL:      accel_read_isr() sees accel_running==false and stops.
 }
+
+bool accel_is_running(void) { return accel_running; }
 
 // ── show_acc ──────────────────────────────────────────────────────────────────
 //
@@ -557,9 +602,10 @@ void show_acc(void)
         printCr();
     }
 
-    // ── Orientation and counters ──
-    print("Pitch:   "); printFloat(last_pitch, 1); print(" deg"); printCr();
-    print("Roll:    "); printFloat(last_roll,  1); print(" deg"); printCr();
+    // ── Filtered acceleration and counters ──
+    print("ax:      "); printFloat(ax_f, 3); print(" g"); printCr();
+    print("ay:      "); printFloat(ay_f, 3); print(" g"); printCr();
+    print("az:      "); printFloat(az_f, 3); print(" g"); printCr();
     print("Samples: "); printDec(sample_count); printCr();
     print("Taps:    "); printDec(tap_count);    printCr();
 }

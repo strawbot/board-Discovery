@@ -85,8 +85,11 @@ static const char index_html_data[] =
     /* ── Board / accelerometer tab ── */
     "<div id=\"ac\" class=\"page\">"
     "<canvas id=\"ac-cv\"></canvas>"
-    "<div id=\"ac-hud\">pitch: <span id=\"ac-p\">-</span>&deg;"
-    "  roll: <span id=\"ac-r\">-</span>&deg;</div>"
+    "<div id=\"ac-hud\">"
+    "x:&thinsp;<span id=\"ac-x\">-</span>&ensp;"
+    "y:&thinsp;<span id=\"ac-y\">-</span>&ensp;"
+    "z:&thinsp;<span id=\"ac-z\">-</span>"
+    "</div>"
     "</div>"
 
     "<script>"
@@ -132,7 +135,7 @@ static const char index_html_data[] =
 
     /* ── Board 3-D visualiser ── */
     /* AC — accelerometer/board namespace */
-    "var AC={es:null,ren:null,sc:null,cam:null,brd:null,topMat:null,tap:0};"
+    "var AC={es:null,ren:null,sc:null,cam:null,brd:null,topMat:null,lastData:0};"
 
     "function acInit(){"
     "if(!window.THREE)return;"                              /* CDN not loaded */
@@ -173,18 +176,13 @@ static const char index_html_data[] =
     "new THREE.MeshLambertMaterial({color:0x1c1c1c}));"
     "mcu.position.set(-0.2,0.065,0);"
     "AC.brd.add(mcu);"
-    /* Render loop */
+    /* Render loop — board color shows data-flow state:                  */
+    /*   green  = samples arriving  (sampling on)                        */
+    /*   grey   = no data >2 s      (sampling stopped / disconnected)    */
     "(function loop(){"
     "requestAnimationFrame(loop);"
-    "var dt=Date.now()-AC.tap;"
-    "if(AC.tap&&dt<500){"
-    /* Tap: scale pulse + flash top face orange → fade back to green */
-    "var s=1+0.13*Math.sin(dt/500*Math.PI);"
-    "AC.brd.scale.set(s,s,s);"
-    "AC.topMat.color.setHex(dt<250?0xffa500:0x2a8c2a);"
-    "}else{"
-    "AC.brd.scale.set(1,1,1);"
-    "AC.topMat.color.setHex(0x2a8c2a);}"
+    "var live=AC.lastData&&(Date.now()-AC.lastData<2000);"
+    "AC.topMat.color.setHex(live?0x2a8c2a:0x3a3a3a);"
     "AC.ren.render(AC.sc,AC.cam);"
     "})();}"
 
@@ -195,14 +193,15 @@ static const char index_html_data[] =
     "AC.es.onmessage=function(e){"
     "try{"
     "var d=JSON.parse(e.data);"
-    /* p and r are tenths of a degree from firmware */
-    "var pitch=d.p/10,roll=d.r/10;"
-    "if(AC.brd){"
-    "AC.brd.rotation.x=pitch*Math.PI/180;"
-    "AC.brd.rotation.z=roll*Math.PI/180;}"
-    "document.getElementById('ac-p').textContent=pitch.toFixed(1);"
-    "document.getElementById('ac-r').textContent=roll.toFixed(1);"
-    "if(d.t)AC.tap=Date.now();"
+    /* x/y/z are normalised gravity components × 1000 from firmware.   */
+    /* Y is up when the board is flat; quaternion handles any tilt.     */
+    "var gx=d.x/1000,gy=d.y/1000,gz=d.z/1000;"
+    "var gv=new THREE.Vector3(gx,gy,gz).normalize();"
+    "if(AC.brd){AC.brd.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),gv);}"
+    "document.getElementById('ac-x').textContent=gx.toFixed(3);"
+    "document.getElementById('ac-y').textContent=gy.toFixed(3);"
+    "document.getElementById('ac-z').textContent=gz.toFixed(3);"
+    "AC.lastData=Date.now();"
     "}catch(ex){}};"
     "AC.es.onerror=function(){};}"
 

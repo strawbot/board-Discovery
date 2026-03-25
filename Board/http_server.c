@@ -210,16 +210,16 @@ static http_conn_t *accel_sse_conn = NULL;
 static const http_response_t accel_sse_sentinel = { NULL, 0 };
 
 // http_accel_push — public; called by accel.c on each significant sample.
-// pitch10 / roll10 are angle × 10 (integer tenths of a degree).
+// gx1000 / gy1000 / gz1000 are normalised gravity components × 1000.
 // tap is true for one call on a detected tap event.
-void http_accel_push(int16_t pitch10, int16_t roll10, bool tap)
+void http_accel_push(int16_t gx1000, int16_t gy1000, int16_t gz1000, bool tap)
 {
     if (!accel_sse_conn || !accel_sse_conn->pcb) return;
 
-    char frame[64];
+    char frame[80];
     int n = snprintf(frame, sizeof(frame),
-        "data: {\"p\":%d,\"r\":%d,\"t\":%d}\n\n",
-        (int)pitch10, (int)roll10, tap ? 1 : 0);
+        "data: {\"x\":%d,\"y\":%d,\"z\":%d,\"t\":%d}\n\n",
+        (int)gx1000, (int)gy1000, (int)gz1000, tap ? 1 : 0);
 
     if (tcp_sndbuf(accel_sse_conn->pcb) >= (u16_t)n) {
         tcp_write(accel_sse_conn->pcb, frame, (u16_t)n, TCP_WRITE_FLAG_COPY);

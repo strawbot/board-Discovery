@@ -31,6 +31,7 @@
 #include "usb_init.h"
 #include "tea.h"
 #include "accel.h"
+#include "button.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -110,7 +111,8 @@ void init_cli();
   cdc_transport_init();
   void network_init(void);
   later(network_init);
-  // later(accel_init);
+  later(accel_init);
+  later(button_init);
   /* USER CODE END 2 */
 
   /* Infinite loop */
