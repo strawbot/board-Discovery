@@ -123,6 +123,7 @@ resetcli   reset cli including removing all macros
 s!   ( h a - ) store next into memory using top as address (16 bit)
 s@   ( a - h ) return contents of memory using top stack item as the address (16 bit)
 shift   ( n m - p ) shift n by m bit left for minus and right for positive
+show-ADC   show all adc inputs
 show-acc   show accelerometer type, orientation (pitch/roll) and tap count
 show-cli   display cli status
 show-eth   show Ethernet link status, speed, duplex and PHY info

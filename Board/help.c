@@ -175,6 +175,7 @@ void help(void) {
     printif("s!   ( h a - ) store next into memory using top as address (16 bit)\n");
     printif("s@   ( a - h ) return contents of memory using top stack item as the address (16 bit)\n");
     printif("shift   ( n m - p ) shift n by m bit left for minus and right for positive\n");
+    printif("show-ADC   show all adc inputs\n");
     printif("show-acc   show accelerometer type, orientation (pitch/roll) and tap count\n");
     printif("show-cli   display cli status\n");
     printif("show-eth   show Ethernet link status, speed, duplex and PHY info\n");

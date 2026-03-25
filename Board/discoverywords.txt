@@ -28,6 +28,10 @@ Words // accelerometer
 	accread			accel_regs_read	// ( a n ) read n registers starting at a
 End
 
+Words // ADC
+	show-ADC		show_adc		// show all adc inputs
+End
+
 Words // system
 	show-sys		show_sys		// show system info: clock frequencies and uptime
 	show-timer		show_timer		// show delta timer state and UTC tick counter

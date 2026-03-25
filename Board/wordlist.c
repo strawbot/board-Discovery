@@ -33,6 +33,7 @@ NAMES(wordnames)
 	NAME("accoff")		//  stop accelerometer
 	NAME("accel_init")		//  init accelerometer interface
 	NAME("accread")		//  ( a n ) read n registers starting at a
+	NAME("show-ADC")		//  show all adc inputs
 	NAME("show-sys")		//  show system info: clock frequencies and uptime
 	NAME("show-timer")		//  show delta timer state and UTC tick counter
 	NAME("reboot")		//  reboot the device via NVIC system reset
@@ -176,6 +177,7 @@ void accel_start(void);
 void accel_stop(void);
 void accel_init(void);
 void accel_regs_read(void);
+void show_adc(void);
 void show_sys(void);
 void show_timer(void);
 void do_reboot(void);
@@ -319,6 +321,7 @@ BODIES(wordbodies)
 	BODY(accel_stop)
 	BODY(accel_init)
 	BODY(accel_regs_read)
+	BODY(show_adc)
 	BODY(show_sys)
 	BODY(show_timer)
 	BODY(do_reboot)
