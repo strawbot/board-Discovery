@@ -94,6 +94,7 @@ static const char index_html_data[] =
     "y:&thinsp;<span id=\"ac-y\">-</span>&ensp;"
     "z:&thinsp;<span id=\"ac-z\">-</span>"
     "</span>"
+    "<span id=\"ac-taps\">taps:&thinsp;0</span>"
     "<button id=\"ac-zero\" onclick=\"acZero()\">zero</button>"
     "</div>"
     "</div>"
@@ -141,7 +142,8 @@ static const char index_html_data[] =
 
     /* ── Board 3-D visualiser ── */
     /* AC — accelerometer/board namespace */
-    "var AC={es:null,ren:null,sc:null,cam:null,brd:null,topMat:null,lastData:0,zeroInv:null};"
+    "var AC={es:null,ren:null,sc:null,cam:null,brd:null,topMat:null,lastData:0,zeroInv:null,"
+           "tapLed:null,tapAt:0,tapCount:0};"
 
     "function acInit(){"
     "if(!window.THREE)return;"                              /* CDN not loaded */
@@ -168,8 +170,12 @@ static const char index_html_data[] =
     "[side,side,AC.topMat,bot,side,side]);"
     "AC.sc.add(AC.brd);"
     /* Four LEDs — LD3 orange, LD4 green, LD5 red, LD6 blue */
-    /* Positioned near right edge of the board top face */
-    "[{c:0xff6600,z:0.44},{c:0x00ff00,z:0.22},{c:0xff2200,z:0},{c:0x2255ff,z:-0.22}]"
+    /* Positioned near right edge of the board top face.   */
+    /* LD3 material is kept in AC.tapLed for the tap flash. */
+    "AC.tapLed=new THREE.MeshBasicMaterial({color:0xff6600});"
+    "var ld3=new THREE.Mesh(new THREE.BoxGeometry(0.09,0.09,0.09),AC.tapLed);"
+    "ld3.position.set(0.78,0.085,0.44);AC.brd.add(ld3);"
+    "[{c:0x00ff00,z:0.22},{c:0xff2200,z:0},{c:0x2255ff,z:-0.22}]"
     ".forEach(function(l){"
     "var m=new THREE.Mesh("
     "new THREE.BoxGeometry(0.09,0.09,0.09),"
@@ -185,10 +191,15 @@ static const char index_html_data[] =
     /* Render loop — board color shows data-flow state:                  */
     /*   green  = samples arriving  (sampling on)                        */
     /*   grey   = no data >2 s      (sampling stopped / disconnected)    */
+    /* LD3 flashes white on tap then fades back to orange over 400 ms.   */
     "(function loop(){"
     "requestAnimationFrame(loop);"
     "var live=AC.lastData&&(Date.now()-AC.lastData<2000);"
     "AC.topMat.color.setHex(live?0x2a8c2a:0x3a3a3a);"
+    "if(AC.tapAt){"
+    "var t=Math.min(1,(Date.now()-AC.tapAt)/400);"
+    "AC.tapLed.color.setRGB(1,1-0.6*t,1-t);"   /* white → orange */
+    "if(t>=1){AC.tapLed.color.setHex(0xff6600);AC.tapAt=0;}}"
     "AC.ren.render(AC.sc,AC.cam);"
     "})();}"
 
@@ -214,6 +225,9 @@ static const char index_html_data[] =
     "document.getElementById('ac-x').textContent=gx.toFixed(3);"
     "document.getElementById('ac-y').textContent=gy.toFixed(3);"
     "document.getElementById('ac-z').textContent=gz.toFixed(3);"
+    "if(d.t){AC.tapAt=Date.now();AC.tapCount++;"
+    "var te=document.getElementById('ac-taps');"
+    "if(te)te.textContent='taps:\u2009'+AC.tapCount;}"
     "AC.lastData=Date.now();"
     "}catch(ex){}};"
     "AC.es.onerror=function(){};}"

@@ -240,30 +240,43 @@ static volatile bool accel_running = false;
 
 // ── Common per-sample processing ──────────────────────────────────────────────
 
+// Orientation gate: samples must be within this band around 1 g to update
+// the IIR filter.  Taps and shocks push the raw magnitude well outside this
+// window, so they have no effect on the displayed orientation.
+// The band is wide enough to pass normal static positions and slow tilts.
+#define MAG_GATE_LO  0.85f   // below 1 g — rules out free-fall fragments
+#define MAG_GATE_HI  1.15f   // above 1 g — rules out taps / impacts
+
 static void accel_update_sample(float ax, float ay, float az)
 {
     float mag_raw = sqrtf(ax*ax + ay*ay + az*az);
 
-    // Discard samples outside the physically plausible range.  Guards the IIR
-    // against occasional corrupted FIFO entries (seen on early-silicon SPI).
+    // Discard samples outside the physically plausible range.
     if (mag_raw < 0.3f || mag_raw > 2.5f) return;
 
-    // Adaptive time constant: slow when stationary, fast when moving.
-    float alpha = (fabsf(mag_raw - 1.0f) > STILL_THRESH) ? ALPHA_MOVE : ALPHA_STILL;
-
-    ax_f += alpha * (ax - ax_f);
-    ay_f += alpha * (ay - ay_f);
-    az_f += alpha * (az - az_f);
-
-    float mag_flt = sqrtf(ax_f*ax_f + ay_f*ay_f + az_f*az_f);
-    uint32_t now  = HAL_GetTick();
-
+    // Tap detection runs before the gate so taps are still registered even
+    // though the spike sample is not used for orientation.
+    float    mag_flt = sqrtf(ax_f*ax_f + ay_f*ay_f + az_f*az_f);
+    uint32_t now     = HAL_GetTick();
     if ((mag_raw - mag_flt) > TAP_THRESH_G &&
         (now - tap_last_ms) > TAP_DEBOUNCE) {
         tap_pending = true;
         tap_last_ms = now;
         tap_count++;
     }
+
+    // Orientation filter: only update when the sample is close to 1 g.
+    // Taps, impacts and strong vibration push mag outside the gate and are
+    // ignored here, keeping the 3-D model smooth.
+    if (mag_raw < MAG_GATE_LO || mag_raw > MAG_GATE_HI) return;
+
+    // Adaptive time constant: slow when the board is stationary (suppresses
+    // angular noise near flat), faster when being deliberately tilted.
+    float alpha = (fabsf(mag_raw - 1.0f) > STILL_THRESH) ? ALPHA_MOVE : ALPHA_STILL;
+
+    ax_f += alpha * (ax - ax_f);
+    ay_f += alpha * (ay - ay_f);
+    az_f += alpha * (az - az_f);
 }
 
 static void accel_maybe_push(void)
