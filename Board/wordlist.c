@@ -34,6 +34,11 @@ NAMES(wordnames)
 	NAME("accel_init")		//  init accelerometer interface
 	NAME("accread")		//  ( a n ) read n registers starting at a
 	NAME("show-ADC")		//  show all adc inputs
+	NAME("show-dac")		//  show DAC sine wave output: frequency, samples, timer registers
+	NAME("dacon")		//  start sine wave on PA4
+	NAME("dacoff")		//  stop sine wave on PA4
+	NAME("dacset")		//  ( f ) set sine wave to frequency f in hz from 1 to 1,000,000
+	NAME("show-dma")		//  show DMA controller usage: active streams, channels, state, error flags
 	NAME("show-sys")		//  show system info: clock frequencies and uptime
 	NAME("show-timer")		//  show delta timer state and UTC tick counter
 	NAME("reboot")		//  reboot the device via NVIC system reset
@@ -178,6 +183,11 @@ void accel_stop(void);
 void accel_init(void);
 void accel_regs_read(void);
 void show_adc(void);
+void show_dac(void);
+void DAC_Sine_Start(void);
+void DAC_Sine_Stop(void);
+void cli_DAC_Sine_SetFreq(void);
+void show_dma(void);
 void show_sys(void);
 void show_timer(void);
 void do_reboot(void);
@@ -322,6 +332,11 @@ BODIES(wordbodies)
 	BODY(accel_init)
 	BODY(accel_regs_read)
 	BODY(show_adc)
+	BODY(show_dac)
+	BODY(DAC_Sine_Start)
+	BODY(DAC_Sine_Stop)
+	BODY(cli_DAC_Sine_SetFreq)
+	BODY(show_dma)
 	BODY(show_sys)
 	BODY(show_timer)
 	BODY(do_reboot)

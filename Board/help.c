@@ -110,6 +110,9 @@ void help(void) {
     printif("constant   ( n - ) <string> give n a name\n");
     printif("cos   ( f -  f  ) calculate the cosine of f\n");
     printif("cr   send end of line to output device\n");
+    printif("dacoff   stop sine wave on PA4\n");
+    printif("dacon   start sine wave on PA4\n");
+    printif("dacset   ( f ) set sine wave to frequency f in hz from 1 to 1,000,000\n");
     printif("decimal   interpret all subsequent numbers as decimal\n");
     printif("decimals\n");
     printif("drop   ( n - ) throw away the top data stack item\n");
@@ -178,6 +181,8 @@ void help(void) {
     printif("show-ADC   show all adc inputs\n");
     printif("show-acc   show accelerometer type, orientation (pitch/roll) and tap count\n");
     printif("show-cli   display cli status\n");
+    printif("show-dac   show DAC sine wave output: frequency, samples, timer registers\n");
+    printif("show-dma   show DMA controller usage: active streams, channels, state, error flags\n");
     printif("show-eth   show Ethernet link status, speed, duplex and PHY info\n");
     printif("show-http   show HTTP server state and active connections\n");
     printif("show-ip   show IP address, gateway, netmask and DHCP state\n");

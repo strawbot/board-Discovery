@@ -35,6 +35,7 @@
 #include "button.h"
 
 void ADC_Driver_Init();   // once, after clocks are up
+void DAC_Sine_Init(uint32_t freq_hz);  // once, after clocks are up
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -109,6 +110,7 @@ int main(void)
   MX_ADC2_Init();
   MX_ADC3_Init();
   ADC_Driver_Init();
+  DAC_Sine_Init(1000);   // 1 kHz default; change with DAC_Sine_SetFreq() via CLI
   /* USER CODE BEGIN 2 */
 void init_tea();
 void init_cli();

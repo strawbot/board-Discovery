@@ -58,6 +58,9 @@ cmove   ( s d n - ) move n bytes from s to d
 constant   ( n - ) <string> give n a name
 cos   ( f -  f  ) calculate the cosine of f
 cr   send end of line to output device
+dacoff   stop sine wave on PA4
+dacon   start sine wave on PA4
+dacset   ( f ) set sine wave to frequency f in hz from 1 to 1,000,000
 decimal   interpret all subsequent numbers as decimal
 decimals  
 drop   ( n - ) throw away the top data stack item
@@ -126,6 +129,8 @@ shift   ( n m - p ) shift n by m bit left for minus and right for positive
 show-ADC   show all adc inputs
 show-acc   show accelerometer type, orientation (pitch/roll) and tap count
 show-cli   display cli status
+show-dac   show DAC sine wave output: frequency, samples, timer registers
+show-dma   show DMA controller usage: active streams, channels, state, error flags
 show-eth   show Ethernet link status, speed, duplex and PHY info
 show-http   show HTTP server state and active connections
 show-ip   show IP address, gateway, netmask and DHCP state

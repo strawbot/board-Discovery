@@ -32,6 +32,17 @@ Words // ADC
 	show-ADC		show_adc		// show all adc inputs
 End
 
+Words // DAC
+	show-dac		show_dac		// show DAC sine wave output: frequency, samples, timer registers
+	dacon			DAC_Sine_Start	// start sine wave on PA4
+	dacoff			DAC_Sine_Stop	// stop sine wave on PA4
+	dacset			cli_DAC_Sine_SetFreq // ( f ) set sine wave to frequency f in hz from 1 to 1,000,000
+End
+
+Words // DMA
+	show-dma		show_dma		// show DMA controller usage: active streams, channels, state, error flags
+End
+
 Words // system
 	show-sys		show_sys		// show system info: clock frequencies and uptime
 	show-timer		show_timer		// show delta timer state and UTC tick counter
