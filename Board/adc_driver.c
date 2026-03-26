@@ -4,33 +4,35 @@
  *
  * Hardware resources used
  * -----------------------
- *   ADC1                – single ADC, scan + continuous mode
- *   DMA2 Stream 0 Ch 0  – circular transfer, ADC1->DR → s_dma_buf[]
- *   GPIOA pin 3         – IN3
- *   GPIOB pins 0, 1     – IN8, IN9
- *   GPIOC pin 2         – IN12
+ *   ADC1                – internal channels only, single-shot on demand
+ *   ADC2                – external pins, continuous scan + DMA
+ *   DMA2 Stream 2 Ch 1  – circular transfer, ADC2->DR → s_dma_buf[]
+ *   GPIOA pin 3         – IN3  (ADC12_IN3)
+ *   GPIOB pins 0, 1     – IN8, IN9  (ADC12_IN8/9 – same pins on both ADCs)
+ *   GPIOC pin 2         – IN12 (ADC12_IN12)
  *   (internal channels need no GPIO)
  *
- * Regular sequence – DMA (external pins only)
- * --------------------------------------------
+ * ADC2 – regular sequence, continuous DMA
+ * ----------------------------------------
  *   Rank 1  IN3   (PA3)   56-cycle sample  (~2.7 µs @ 21 MHz ADC clk)
  *   Rank 2  IN8   (PB0)   56-cycle sample
  *   Rank 3  IN9   (PB1)   56-cycle sample
  *   Rank 4  IN12  (PC2)   56-cycle sample
  *
- * Injected sequence – polled on demand in ADC_Driver_Update()
- * ------------------------------------------------------------
+ * ADC1 – single-shot reads, called from ADC_Driver_Update()
+ * ----------------------------------------------------------
  *   Pass A  TSVREFE=1, VBATE=0:
- *     Rank 1  TEMP    (CH16)  480-cycle sample  (~22.9 µs)
- *     Rank 2  VREFINT (CH17)  480-cycle sample
+ *     TEMP    (CH16)  480-cycle sample  (~22.9 µs)
+ *     VREFINT (CH17)  480-cycle sample
  *   Pass B  TSVREFE=0, VBATE=1:
- *     Rank 1  VBAT    (CH18)  480-cycle sample
+ *     VBAT    (CH18)  480-cycle sample
  *
  *   RM0090 §13.3.3 (ADC_CCR) warns: "VBATE and TSVREFE bits cannot be set
  *   at the same time – when both are set, only the VBAT conversion is
- *   performed," meaning CH16 receives VBAT voltage instead of the die
- *   temperature.  The two-pass injected approach ensures these bits are
- *   never asserted simultaneously.
+ *   performed."  With ADC1 dedicated to internal channels and ADC2 running
+ *   external pins independently, toggling TSVREFE/VBATE never disturbs the
+ *   external scan.  ADC1 also has no continuous mode and no DMA, making it
+ *   straightforward to stop during low-power states.
  *
  * Calibration
  * -----------
@@ -90,11 +92,28 @@
 /** ADC full-scale value for 12-bit resolution. */
 #define ADC_FULL_SCALE           4095.0f
 
+/*
+ * ADC clock prescaler.
+ *
+ * STM32F407 @ 168 MHz: APB2 = 84 MHz.  ADC maximum clock = 36 MHz (RM0090
+ * §13.3.1).  DIV4 → 21 MHz is the correct choice for a 168 MHz system.
+ *
+ * DIV2 → 42 MHz is over-spec: the ADC may appear to work but gives
+ * inaccurate readings, particularly for the high-impedance temperature
+ * sensor input which needs sufficient sample time to charge the S/H cap.
+ *
+ * If ADC_PRESCALER is already defined in a project-wide header this
+ * fallback is skipped.  Verify it equals LL_ADC_CLOCK_SYNC_PCLK_DIV4.
+ */
+#ifndef ADC_PRESCALER
+#define ADC_PRESCALER            LL_ADC_CLOCK_SYNC_PCLK_DIV4
+#endif
+
 /**
- * Number of channels in the continuous DMA scan.
- * Only the four external pins are in the regular sequence; TEMP, VREFINT,
- * and VBAT are all read via the injected sequence so that TSVREFE and
- * VBATE are never asserted simultaneously.
+ * Number of channels in the ADC2 continuous DMA scan.
+ * Only the four external pins feed ADC2; TEMP, VREFINT, and VBAT are read
+ * on demand through ADC1 in two separate passes so that TSVREFE and VBATE
+ * are never asserted simultaneously (RM0090 §13.3.3).
  */
 #define ADC_DMA_CHANNELS         4U
 
@@ -141,7 +160,7 @@ static void adc_gpio_init(void)
 }
 
 /* =========================================================================
- * Private helper – DMA2 Stream 0, Channel 0  (ADC1 → memory, circular)
+ * Private helper – DMA2 Stream 2, Channel 1  (ADC2 → memory, circular)
  * ====================================================================== */
 
 static void adc_dma_init(void)
@@ -149,39 +168,36 @@ static void adc_dma_init(void)
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA2);
 
     /* Ensure stream is disabled before configuring */
-    LL_DMA_DisableStream(DMA2, LL_DMA_STREAM_0);
-    while (LL_DMA_IsEnabledStream(DMA2, LL_DMA_STREAM_0)) {}
+    LL_DMA_DisableStream(DMA2, LL_DMA_STREAM_2);
+    while (LL_DMA_IsEnabledStream(DMA2, LL_DMA_STREAM_2)) {}
 
-    LL_DMA_SetChannelSelection  (DMA2, LL_DMA_STREAM_0, LL_DMA_CHANNEL_0);
-    LL_DMA_SetDataTransferDirection(DMA2, LL_DMA_STREAM_0, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
-    LL_DMA_SetStreamPriorityLevel  (DMA2, LL_DMA_STREAM_0, LL_DMA_PRIORITY_LOW);
-    LL_DMA_SetMode                 (DMA2, LL_DMA_STREAM_0, LL_DMA_MODE_CIRCULAR);
-    LL_DMA_SetPeriphIncMode        (DMA2, LL_DMA_STREAM_0, LL_DMA_PERIPH_NOINCREMENT);
-    LL_DMA_SetMemoryIncMode        (DMA2, LL_DMA_STREAM_0, LL_DMA_MEMORY_INCREMENT);
-    LL_DMA_SetPeriphSize           (DMA2, LL_DMA_STREAM_0, LL_DMA_PDATAALIGN_HALFWORD);
-    LL_DMA_SetMemorySize           (DMA2, LL_DMA_STREAM_0, LL_DMA_MDATAALIGN_HALFWORD);
-    /*
-     * NOTE: STM32F4 LL uses LL_DMA_SetDataLength (not LL_DMA_SetNbDataToTransfer
-     * which is the name used on G0/G4/H7/U5 families).
-     */
-    LL_DMA_SetDataLength           (DMA2, LL_DMA_STREAM_0, ADC_DMA_CHANNELS);
-    LL_DMA_SetPeriphAddress        (DMA2, LL_DMA_STREAM_0, (uint32_t)&ADC1->DR);
-    LL_DMA_SetMemoryAddress        (DMA2, LL_DMA_STREAM_0, (uint32_t)s_dma_buf);
+    LL_DMA_SetChannelSelection     (DMA2, LL_DMA_STREAM_2, LL_DMA_CHANNEL_1);
+    LL_DMA_SetDataTransferDirection(DMA2, LL_DMA_STREAM_2, LL_DMA_DIRECTION_PERIPH_TO_MEMORY);
+    LL_DMA_SetStreamPriorityLevel  (DMA2, LL_DMA_STREAM_2, LL_DMA_PRIORITY_LOW);
+    LL_DMA_SetMode                 (DMA2, LL_DMA_STREAM_2, LL_DMA_MODE_CIRCULAR);
+    LL_DMA_SetPeriphIncMode        (DMA2, LL_DMA_STREAM_2, LL_DMA_PERIPH_NOINCREMENT);
+    LL_DMA_SetMemoryIncMode        (DMA2, LL_DMA_STREAM_2, LL_DMA_MEMORY_INCREMENT);
+    LL_DMA_SetPeriphSize           (DMA2, LL_DMA_STREAM_2, LL_DMA_PDATAALIGN_HALFWORD);
+    LL_DMA_SetMemorySize           (DMA2, LL_DMA_STREAM_2, LL_DMA_MDATAALIGN_HALFWORD);
+    LL_DMA_SetDataLength           (DMA2, LL_DMA_STREAM_2, ADC_DMA_CHANNELS);
+    LL_DMA_SetPeriphAddress        (DMA2, LL_DMA_STREAM_2, (uint32_t)&ADC2->DR);
+    LL_DMA_SetMemoryAddress        (DMA2, LL_DMA_STREAM_2, (uint32_t)s_dma_buf);
 
-    LL_DMA_EnableStream(DMA2, LL_DMA_STREAM_0);
+    LL_DMA_EnableStream(DMA2, LL_DMA_STREAM_2);
 }
 
 /* =========================================================================
- * Private helper – ADC1 core
+ * Private helper – ADC1 (internal channels, single-shot, no DMA)
  * ====================================================================== */
 
-static void adc_core_init(void)
+static void adc1_init(void)
 {
     LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_ADC1);
 
-    /* ----- Common (shared ADC registers) -------------------------------- */
+    /* ----- Common (shared ADC clock) ------------------------------------ */
 
-    /* ADC clock: synchronous, derived from APB2 with chosen prescaler.    */
+    /* ADC clock: synchronous, APB2 with chosen prescaler.
+     * Must be configured before enabling either ADC instance.             */
     LL_ADC_SetCommonClock(__LL_ADC_COMMON_INSTANCE(ADC1), ADC_PRESCALER);
 
     /*
@@ -189,7 +205,7 @@ static void adc_core_init(void)
      * RM0090 §13.3.3: "When both VBATE and TSVREFE bits are set, only the
      * VBAT conversion is performed," meaning CH16 receives VBAT instead of
      * the temperature sensor signal.  VBATE is toggled only during the
-     * injected VBAT measurement in ADC_Driver_Update().
+     * dedicated VBAT read in read_internal_channels().
      */
     LL_ADC_SetCommonPathInternalCh(
         __LL_ADC_COMMON_INSTANCE(ADC1),
@@ -201,59 +217,80 @@ static void adc_core_init(void)
     LL_ADC_SetResolution    (ADC1, LL_ADC_RESOLUTION_12B);
     LL_ADC_SetDataAlignment (ADC1, LL_ADC_DATA_ALIGN_RIGHT);
 
-    /* Scan mode: convert all ranks in the regular sequence.               */
-    LL_ADC_SetSequencersScanMode(ADC1, LL_ADC_SEQ_SCAN_ENABLE);
-
-    /* ----- Regular (foreground) sequence -------------------------------- */
-
+    /* Single-rank mode: one channel at a time, selected per-call.         */
+    LL_ADC_SetSequencersScanMode  (ADC1, LL_ADC_SEQ_SCAN_DISABLE);
     LL_ADC_REG_SetTriggerSource   (ADC1, LL_ADC_REG_TRIG_SOFTWARE);
-    LL_ADC_REG_SetContinuousMode  (ADC1, LL_ADC_REG_CONV_CONTINUOUS);
-    /* 4 ranks: external pins only.  Internal channels are injected. */
-    LL_ADC_REG_SetSequencerLength (ADC1, LL_ADC_REG_SEQ_SCAN_ENABLE_4RANKS);
+    LL_ADC_REG_SetContinuousMode  (ADC1, LL_ADC_REG_CONV_SINGLE);
+    LL_ADC_REG_SetSequencerLength (ADC1, LL_ADC_REG_SEQ_SCAN_DISABLE);
 
-    /* DMA_UNLIMITED: the DMA request is re-issued after each sequence end,
-     * keeping the circular DMA buffer perpetually refreshed.              */
-    LL_ADC_REG_SetDMATransfer(ADC1, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
+    /* No DMA – results are read directly from DR after each conversion.   */
+    LL_ADC_REG_SetDMATransfer(ADC1, LL_ADC_REG_DMA_TRANSFER_NONE);
 
-    /* ----- Regular channel assignment ----------------------------------- */
+    /* ----- Sample times for internal channels --------------------------- */
 
-    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
-    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_2, LL_ADC_CHANNEL_8);
-    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_3, LL_ADC_CHANNEL_9);
-    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_4, LL_ADC_CHANNEL_12);
-
-    /* ----- Sample times ------------------------------------------------- */
-
-    /*
-     * External channels: 56 cycles @ 21 MHz ≈ 2.67 µs.
-     * Internal channels: 480 cycles @ 21 MHz ≈ 22.9 µs (≥ 10 µs required).
-     * Internal sample times are set here once; ranks are assigned
-     * dynamically inside read_internal_channels().
-     */
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_3,          LL_ADC_SAMPLINGTIME_56CYCLES);
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_8,          LL_ADC_SAMPLINGTIME_56CYCLES);
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_9,          LL_ADC_SAMPLINGTIME_56CYCLES);
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_12,         LL_ADC_SAMPLINGTIME_56CYCLES);
+    /* 480 cycles @ 21 MHz ≈ 22.9 µs  (≥ 10 µs required by datasheet).   */
     LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_TEMPSENSOR, LL_ADC_SAMPLINGTIME_480CYCLES);
     LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_VREFINT,    LL_ADC_SAMPLINGTIME_480CYCLES);
     LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_VBAT,       LL_ADC_SAMPLINGTIME_480CYCLES);
 
-    /* ----- Injected sequence: software trigger, ranks set dynamically --- */
-
-    LL_ADC_INJ_SetTriggerSource(ADC1, LL_ADC_INJ_TRIG_SOFTWARE);
-
-    /* ----- Enable and start --------------------------------------------- */
+    /* ----- Enable ------------------------------------------------------- */
 
     LL_ADC_Enable(ADC1);
 
-    /*
-     * Wait for ADC stabilisation.
-     * RM0090 says the ADC needs a stabilisation time t_STAB before the
-     * first conversion can be launched.  At 168 MHz, 1000 nops ≈ ~6 µs.
-     */
+    /* t_STAB stabilisation delay before first conversion.
+     * At 168 MHz core, 1000 NOPs ≈ 6 µs.                                 */
     for (volatile uint32_t i = 0U; i < 1000U; i++) { __NOP(); }
 
-    LL_ADC_REG_StartConversionSWStart(ADC1);
+    /* No continuous start – conversions are triggered on demand only.     */
+}
+
+/* =========================================================================
+ * Private helper – ADC2 (external pins, continuous scan + DMA)
+ * ====================================================================== */
+
+static void adc2_init(void)
+{
+    LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_ADC2);
+
+    /* Common clock was already programmed in adc1_init().                 */
+
+    /* ----- ADC2 instance ------------------------------------------------ */
+
+    LL_ADC_SetResolution    (ADC2, LL_ADC_RESOLUTION_12B);
+    LL_ADC_SetDataAlignment (ADC2, LL_ADC_DATA_ALIGN_RIGHT);
+
+    /* Scan mode: walk all four ranks in sequence on each trigger.         */
+    LL_ADC_SetSequencersScanMode  (ADC2, LL_ADC_SEQ_SCAN_ENABLE);
+    LL_ADC_REG_SetTriggerSource   (ADC2, LL_ADC_REG_TRIG_SOFTWARE);
+    LL_ADC_REG_SetContinuousMode  (ADC2, LL_ADC_REG_CONV_CONTINUOUS);
+    LL_ADC_REG_SetSequencerLength (ADC2, LL_ADC_REG_SEQ_SCAN_ENABLE_4RANKS);
+
+    /* DMA_UNLIMITED: DMA request is re-issued after every sequence end,
+     * keeping the circular s_dma_buf[] perpetually refreshed.             */
+    LL_ADC_REG_SetDMATransfer(ADC2, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
+
+    /* ----- External channel assignment – ranks 1–4 ---------------------- */
+
+    LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
+    LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_2, LL_ADC_CHANNEL_8);
+    LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_3, LL_ADC_CHANNEL_9);
+    LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_4, LL_ADC_CHANNEL_12);
+
+    /* ----- Sample times ------------------------------------------------- */
+
+    /* 56 cycles @ 21 MHz ≈ 2.67 µs per channel.                          */
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_3,  LL_ADC_SAMPLINGTIME_56CYCLES);
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_8,  LL_ADC_SAMPLINGTIME_56CYCLES);
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_9,  LL_ADC_SAMPLINGTIME_56CYCLES);
+    LL_ADC_SetChannelSamplingTime(ADC2, LL_ADC_CHANNEL_12, LL_ADC_SAMPLINGTIME_56CYCLES);
+
+    /* ----- Enable and start continuous scan ----------------------------- */
+
+    LL_ADC_Enable(ADC2);
+
+    for (volatile uint32_t i = 0U; i < 1000U; i++) { __NOP(); }
+
+    LL_ADC_REG_StartConversionSWStart(ADC2);
 }
 
 /* =========================================================================
@@ -262,20 +299,56 @@ static void adc_core_init(void)
 
 void ADC_Driver_Init(void)
 {
-    adc_gpio_init();
-    adc_dma_init();
-    adc_core_init();
+    adc_gpio_init();   /* PA3, PB0, PB1, PC2 → analog mode              */
+    adc_dma_init();    /* DMA2 Stream2 Ch1 → ADC2->DR, circular          */
+    adc1_init();       /* ADC1: internal channels, single-shot, no DMA   */
+    adc2_init();       /* ADC2: external pins, continuous scan + DMA      */
 }
 
 /* =========================================================================
- * Private helper – injected reads for all three internal channels
+ * Private helper – single-shot regular conversion on ADC1
  *
- * Pass A (TSVREFE=1, VBATE=0): 2-rank injected – TEMP then VREFINT.
- * Pass B (TSVREFE=0, VBATE=1): 1-rank injected – VBAT.
+ * Sets rank-1 to the requested channel, fires a software trigger, waits
+ * for EOC, and returns the 12-bit result.  ADC1 has no continuous mode
+ * and no DMA, so there is no ongoing conversion to interrupt.
+ * ====================================================================== */
+
+static uint16_t adc1_read_channel(uint32_t channel)
+{
+    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, channel);
+
+    /*
+     * Clear any stale EOC/EOCS flag before triggering.  If a previous
+     * conversion left the flag set (e.g. DR was read by the compiler but
+     * the flag persisted due to an optimisation artefact), the poll below
+     * would return immediately and read old data.
+     *
+     * STM32F4 LL naming: the EOC status-register bit is exposed as
+     * LL_ADC_IsActiveFlag_EOCS / LL_ADC_ClearFlag_EOCS (the "EOCS" suffix
+     * reflects that the bit's meaning is controlled by the EOCS bit in CR2).
+     */
+    LL_ADC_ClearFlag_EOCS(ADC1);
+
+    LL_ADC_REG_StartConversionSWStart(ADC1);
+    while (!LL_ADC_IsActiveFlag_EOCS(ADC1)) {}
+    const uint16_t raw = (uint16_t)LL_ADC_REG_ReadConversionData12(ADC1);
+    LL_ADC_ClearFlag_EOCS(ADC1);
+    return raw;
+}
+
+/* =========================================================================
+ * Private helper – on-demand reads for all three internal channels
  *
- * RM0090 §13.3.3: VBATE and TSVREFE must never be set simultaneously.
- * The regular DMA scan (external pins only) is unaffected and continues
- * throughout.
+ * Pass A (TSVREFE=1, VBATE=0): TEMP then VREFINT.
+ * Pass B (TSVREFE=0, VBATE=1): VBAT.
+ *
+ * RM0090 §13.3.3: VBATE and TSVREFE must never be set simultaneously –
+ * when both are set, only the VBAT conversion is performed (CH16 receives
+ * the VBAT signal instead of the temperature sensor).  The two-pass
+ * sequence guarantees they are never asserted at the same time.
+ *
+ * ADC2's continuous DMA scan runs unaffected throughout; the CCR bits
+ * only gate internal channel muxes and have no effect on ADC2 channels.
  * ====================================================================== */
 
 static void read_internal_channels(uint16_t *temp_raw,
@@ -283,44 +356,29 @@ static void read_internal_channels(uint16_t *temp_raw,
                                    uint16_t *vbat_raw)
 {
     /* ------------------------------------------------------------------
-     * Pass A: TEMP + VREFINT
+     * Pass A: TSVREFE=1, VBATE=0  →  TEMP + VREFINT
      * ---------------------------------------------------------------- */
     LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(ADC1),
                                    LL_ADC_PATH_INTERNAL_TEMPSENSOR |
                                    LL_ADC_PATH_INTERNAL_VREFINT);
 
-    LL_ADC_INJ_SetSequencerLength(ADC1, LL_ADC_INJ_SEQ_SCAN_ENABLE_2RANKS);
-    LL_ADC_INJ_SetSequencerRanks (ADC1, LL_ADC_INJ_RANK_1, LL_ADC_CHANNEL_TEMPSENSOR);
-    LL_ADC_INJ_SetSequencerRanks (ADC1, LL_ADC_INJ_RANK_2, LL_ADC_CHANNEL_VREFINT);
-
-    /* Allow internal switch to settle before triggering. */
+    /* Allow the internal mux switch to settle (~200 NOPs ≈ 1.2 µs).    */
     for (volatile uint32_t i = 0U; i < 200U; i++) { __NOP(); }
 
-    LL_ADC_INJ_StartConversionSWStart(ADC1);
-    while (!LL_ADC_IsActiveFlag_JEOS(ADC1)) {}
-
-    *temp_raw = (uint16_t)LL_ADC_INJ_ReadConversionData12(ADC1, LL_ADC_INJ_RANK_1);
-    *vref_raw = (uint16_t)LL_ADC_INJ_ReadConversionData12(ADC1, LL_ADC_INJ_RANK_2);
-    LL_ADC_ClearFlag_JEOS(ADC1);
+    *temp_raw = adc1_read_channel(LL_ADC_CHANNEL_TEMPSENSOR);
+    *vref_raw = adc1_read_channel(LL_ADC_CHANNEL_VREFINT);
 
     /* ------------------------------------------------------------------
-     * Pass B: VBAT
+     * Pass B: TSVREFE=0, VBATE=1  →  VBAT
      * ---------------------------------------------------------------- */
     LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(ADC1),
                                    LL_ADC_PATH_INTERNAL_VBAT);
 
-    LL_ADC_INJ_SetSequencerLength(ADC1, LL_ADC_INJ_SEQ_SCAN_DISABLE);   /* 1 rank */
-    LL_ADC_INJ_SetSequencerRanks (ADC1, LL_ADC_INJ_RANK_1, LL_ADC_CHANNEL_VBAT);
-
     for (volatile uint32_t i = 0U; i < 200U; i++) { __NOP(); }
 
-    LL_ADC_INJ_StartConversionSWStart(ADC1);
-    while (!LL_ADC_IsActiveFlag_JEOS(ADC1)) {}
+    *vbat_raw = adc1_read_channel(LL_ADC_CHANNEL_VBAT);
 
-    *vbat_raw = (uint16_t)LL_ADC_INJ_ReadConversionData12(ADC1, LL_ADC_INJ_RANK_1);
-    LL_ADC_ClearFlag_JEOS(ADC1);
-
-    /* Restore TSVREFE so the temperature sensor stays powered between calls. */
+    /* Restore TSVREFE so the sensor stays powered between calls.        */
     LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(ADC1),
                                    LL_ADC_PATH_INTERNAL_TEMPSENSOR |
                                    LL_ADC_PATH_INTERNAL_VREFINT);
@@ -345,7 +403,7 @@ void ADC_Driver_Update(ADC_Results_t *results)
     }
 
     /* ------------------------------------------------------------------
-     * Step 2: injected reads for TEMP, VREFINT, and VBAT.
+     * Step 2: single-shot reads on ADC1 for TEMP, VREFINT, and VBAT.
      * ---------------------------------------------------------------- */
     read_internal_channels(&results->raw[ADC_IDX_TEMP],
                            &results->raw[ADC_IDX_VREFINT],
@@ -382,9 +440,19 @@ void ADC_Driver_Update(ADC_Results_t *results)
     /* ------------------------------------------------------------------
      * Step 6: die temperature – two-point factory calibration.
      *
-     * Scale the raw reading to the 3.3 V equivalent before interpolating:
+     * The factory cal words (CAL1 @ 30 °C, CAL2 @ 110 °C) were sampled at
+     * exactly VDDA = 3300 mV.  The temperature sensor output is an absolute
+     * voltage (not ratiometric to VDDA): for the same die temperature, a
+     * lower VDDA raises the raw ADC count because the ADC full-scale drops.
      *
-     *   ts_scaled = raw_temp × VREFINT_CAL_VREF_MV / VDDA_mV
+     * Normalise raw_temp back to the 3300 mV reference so it is directly
+     * comparable to CAL1/CAL2:
+     *
+     *   ts_scaled = raw_temp × VDDA_mV / VREFINT_CAL_VREF_MV
+     *
+     * Note the direction: multiply by VDDA/3300 (not 3300/VDDA).
+     * Multiplying the wrong way compounds the error instead of cancelling
+     * it, and produces wildly high temperatures when VDDA < 3300 mV.
      *
      *   T(°C) = (CAL2_TEMP − CAL1_TEMP) × (ts_scaled − CAL1)
      *           ─────────────────────────────────────────────── + CAL1_TEMP
@@ -395,7 +463,7 @@ void ADC_Driver_Update(ADC_Results_t *results)
 
     const float ts_scaled =
         (float)results->raw[ADC_IDX_TEMP]
-        * (float)VREFINT_CAL_VREF_MV / vdda_mv;
+        * vdda_mv / (float)VREFINT_CAL_VREF_MV;
 
     results->temperature_c =
         (TEMPSENSOR_CAL2_TEMP_C - TEMPSENSOR_CAL1_TEMP_C)
@@ -452,7 +520,7 @@ static void print_row(const char *label,
 void ADC_Driver_PrintAll(const ADC_Results_t *results)
 {
     maybeCr();
-    print("--- ADC1 readings (STM32F407) ---");
+    print("--- ADC readings (STM32F407) ---");
     printCr();
 
     /* Header */
