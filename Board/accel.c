@@ -193,7 +193,7 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 
 // Poll interval (ms): at 100 Hz ODR ~10 samples accumulate per poll.
 // FIFO absorbs jitter — the MCU timing is soft, the chip timing is hard.
-#define ACCEL_POLL_MS 100
+#define ACCEL_POLL_MS 250
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
