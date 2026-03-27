@@ -25,7 +25,9 @@ Words // accelerometer
 	accon			accel_start		// start accerloeromete
 	accoff			accel_stop		// stop accelerometer
 	accel_init		accel_init		// init accelerometer interface
-	accread			accel_regs_read	// ( a n ) read n registers starting at a
+	accread			accel_regs_read	// ( a n ) read n accelerometer registers starting at a
+	accwrite		accel_reg_write	// ( n a ) write n to accelerometer register a
+	xyz				xyz_read		// display current accelerometer values
 End
 
 Words // ADC

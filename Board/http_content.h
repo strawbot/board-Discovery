@@ -59,6 +59,11 @@ static const char index_html_data[] =
     "#ac-zero{background:#222;color:#666;border:1px solid #444;padding:2px 8px;"
              "cursor:pointer;font-family:monospace;font-size:12px}"
     "#ac-zero:hover{color:#ccc}"
+    "#ac.on{display:flex;gap:8px;align-items:flex-start}"
+    "#ac-left{flex:1;min-width:0}"
+    "#ac-right{flex:1;min-width:0}"
+    "#gr-cv{width:100%;height:360px;display:block;background:#111;border:1px solid #333}"
+    "#gr-hud{font-size:12px;color:#666;padding:4px 0 0 2px}"
     "</style></head><body>"
     "<div class=\"tabs\">"
     "<button class=\"tab on\" onclick=\"sw('st',this)\">Active Robot</button>"
@@ -87,6 +92,7 @@ static const char index_html_data[] =
 
     /* ── Board / accelerometer tab ── */
     "<div id=\"ac\" class=\"page\">"
+    "<div id=\"ac-left\">"
     "<canvas id=\"ac-cv\"></canvas>"
     "<div id=\"ac-hud\">"
     "<span>"
@@ -98,6 +104,11 @@ static const char index_html_data[] =
     "<button id=\"ac-zero\" onclick=\"acZero()\">zero</button>"
     "</div>"
     "</div>"
+    "<div id=\"ac-right\">"
+    "<canvas id=\"gr-cv\"></canvas>"
+    "<div id=\"gr-hud\">no data</div>"
+    "</div>"
+    "</div>"
 
     "<script>"
 
@@ -107,7 +118,7 @@ static const char index_html_data[] =
     "document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));"
     "document.getElementById(id).classList.add('on');el.classList.add('on');"
     "if(id==='st')stConnect();else stDisconnect();"
-    "if(id==='ac')acConnect();else acDisconnect();}"
+    "if(id==='ac'){acConnect();grConnect();}else{acDisconnect();grDisconnect();}}"
 
     /* ── Status SSE ── */
     "var stEs=null,stEpoch=0,stEpochAt=0,stBase=0,stTick=null;"
@@ -194,7 +205,7 @@ static const char index_html_data[] =
     /* LD3 flashes white on tap then fades back to orange over 400 ms.   */
     "(function loop(){"
     "requestAnimationFrame(loop);"
-    "var live=AC.lastData&&(Date.now()-AC.lastData<2000);"
+    "var live=AC.lastData&&(Date.now()-AC.lastData<3000);"
     "AC.topMat.color.setHex(live?0x2a8c2a:0x3a3a3a);"
     "if(AC.tapAt){"
     "var t=Math.min(1,(Date.now()-AC.tapAt)/400);"
@@ -243,12 +254,77 @@ static const char index_html_data[] =
     "function acDisconnect(){"
     "if(AC.es){AC.es.close();AC.es=null;}}"
 
+    /* ── Graph — dataset line-chart viewer ── */
+    /* graph_dataset(data,n) is the public API:                             */
+    /*   data  – array-like of numeric samples (JS Array, Float32Array …)  */
+    /*   n     – number of samples to use; omit / undefined → data.length  */
+    /* Each call replaces the previous dataset and redraws immediately.    */
+    /* grConnect() / grDisconnect() manage the /graph_stream SSE feed;     */
+    /* the firmware side sends JSON lines:  {"d":[v0,v1,…,vN-1]}           */
+    "var GR={es:null,data:null};"
+    "function graph_dataset(data,n){"
+    "var len=(n!==undefined)?n:data.length;"
+    "var a=new Array(len);"
+    "for(var i=0;i<len;i++)a[i]=+data[i];"
+    "GR.data=a;grDraw();}"
+    "function grInit(){"
+    "var cv=document.getElementById('gr-cv');"
+    "if(!cv)return;"
+    "cv.width=cv.offsetWidth||480;cv.height=360;}"
+    "function grDraw(){"
+    "var cv=document.getElementById('gr-cv');"
+    "if(!cv)return;"
+    "if(!cv.width)grInit();"
+    "var ctx=cv.getContext('2d'),W=cv.width,H=cv.height,d=GR.data;"
+    "ctx.fillStyle='#111';ctx.fillRect(0,0,W,H);"
+    "if(!d||!d.length){"
+    "ctx.fillStyle='#444';ctx.font='13px monospace';ctx.textAlign='center';"
+    "ctx.fillText('no data',W/2,H/2);return;}"
+    "var n=d.length,mn=d[0],mx=d[0];"
+    "for(var i=1;i<n;i++){if(d[i]<mn)mn=d[i];if(d[i]>mx)mx=d[i];}"
+    "if(mn===mx){mn-=1;mx+=1;}"
+    "var ml=46,mr=8,mt=10,mb=22,pw=W-ml-mr,ph=H-mt-mb;"
+    /* y-grid + labels */
+    "ctx.font='10px monospace';ctx.textAlign='right';"
+    "for(var s=0;s<=5;s++){"
+    "var gy=mt+ph*s/5;"
+    "ctx.strokeStyle='#1e1e1e';ctx.lineWidth=1;"
+    "ctx.beginPath();ctx.moveTo(ml,gy);ctx.lineTo(ml+pw,gy);ctx.stroke();"
+    "ctx.fillStyle='#555';ctx.fillText((mx-(mx-mn)*s/5).toFixed(2),ml-3,gy+3);}"
+    /* x-labels */
+    "var xs=Math.min(n-1,8);ctx.textAlign='center';"
+    "for(var s=0;s<=xs;s++){"
+    "var xi=Math.round(s*(n-1)/(xs||1)),gx=ml+pw*s/(xs||1);"
+    "ctx.fillStyle='#555';ctx.fillText(xi,gx,H-5);}"
+    /* axes */
+    "ctx.strokeStyle='#444';ctx.lineWidth=1;"
+    "ctx.beginPath();ctx.moveTo(ml,mt);ctx.lineTo(ml,mt+ph);"
+    "ctx.lineTo(ml+pw,mt+ph);ctx.stroke();"
+    /* line */
+    "ctx.strokeStyle='#0f0';ctx.lineWidth=1.5;ctx.beginPath();"
+    "for(var i=0;i<n;i++){"
+    "var px=ml+pw*i/(n>1?n-1:1),py=mt+ph*(1-(d[i]-mn)/(mx-mn));"
+    "if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}"
+    "ctx.stroke();"
+    /* hud */
+    "var h=document.getElementById('gr-hud');"
+    "if(h)h.textContent='n='+n+'  min='+mn.toFixed(3)+'  max='+mx.toFixed(3);}"
+    "function grConnect(){"
+    "if(GR.es)return;"
+    "if(!document.getElementById('gr-cv').width)grInit();"
+    "GR.es=new EventSource('/graph_stream');"
+    "GR.es.onmessage=function(e){"
+    "try{var p=JSON.parse(e.data);if(p.d&&p.d.length)graph_dataset(p.d,p.d.length);}catch(ex){}};"
+    "GR.es.onerror=function(){};}"
+    "function grDisconnect(){"
+    "if(GR.es){GR.es.close();GR.es=null;}}"
+
     /* ── Visibility / focus management ── */
     "document.addEventListener('visibilitychange',()=>{"
-    "if(document.hidden){stDisconnect();acDisconnect();}"
+    "if(document.hidden){stDisconnect();acDisconnect();grDisconnect();}"
     "else{"
     "if(document.getElementById('st').classList.contains('on'))stConnect();"
-    "if(document.getElementById('ac').classList.contains('on'))acConnect();}});"
+    "if(document.getElementById('ac').classList.contains('on')){acConnect();grConnect();}}});"
 
     /* Auto-connect on load — status tab is default */
     "stConnect();"

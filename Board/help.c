@@ -92,7 +92,8 @@ void help(void) {
     printif("accel_init   init accelerometer interface\n");
     printif("accoff   stop accelerometer\n");
     printif("accon   start accerloeromete\n");
-    printif("accread   ( a n ) read n registers starting at a\n");
+    printif("accread   ( a n ) read n accelerometer registers starting at a\n");
+    printif("accwrite   ( n a ) write n to accelerometer register a\n");
     printif("acos   ( f -  f  ) calculate the inverse cos of f\n");
     printif("again  [i]  end of a continuous loop construct\n");
     printif("allot   ( n - ) reserve n bytes after end of dictionary\n");
@@ -214,4 +215,5 @@ void help(void) {
     printif("while  [i]  ( n - ) conditional choice in a loop construct\n");
     printif("words   list all words in dictionary\n");
     printif("xor   ( n m - p ) bitwise XOR top two data stack items and leave on top\n");
+    printif("xyz   display current accelerometer values\n");
 }

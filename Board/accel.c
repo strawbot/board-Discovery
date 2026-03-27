@@ -165,6 +165,8 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
     CS_HIGH();
 }
 
+// read 8 bytes from acc fifo; x:2 y:2 z:2 ctrl:status (0x20 is empty bit, 0x40 is overrun)
+
 // ── LIS3DSH registers (WHO_AM_I = 0x3F) ──────────────────────────────────────
 
 #define LIS3DSH_CTRL_REG4  0x20   // ODR[7:4], BDU[3], ZEN[2], YEN[1], XEN[0]
@@ -180,7 +182,7 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 // FIFO_CTRL: Stream mode (FMODE=010), watermark=25 →  0x59
 #define LIS3DSH_CTRL4_VAL     0x6Fu
 #define LIS3DSH_CTRL5_VAL     0x00u
-#define LIS3DSH_CTRL6_VAL     (0x40u | 0x20u | 0x10u)  // FIFO_EN | WTM_EN | ADD_INC
+#define LIS3DSH_CTRL6_VAL     (/*0x40u | 0x20u | */0x10u)  // FIFO_EN | WTM_EN | ADD_INC
 #define LIS3DSH_FIFO_CTRL_VAL ((0x02u << 5) | 25u)     // stream + WTM=25
 
 #define LIS3DSH_FIFO_WTM      25u  // samples per batch → 4 Hz push rate at 100 Hz ODR
@@ -193,7 +195,7 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 
 // Poll interval (ms): at 100 Hz ODR ~10 samples accumulate per poll.
 // FIFO absorbs jitter — the MCU timing is soft, the chip timing is hard.
-#define ACCEL_POLL_MS 250
+#define ACCEL_POLL_MS 10
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -211,9 +213,30 @@ static float    last_pitch = 0.0f, last_roll = 0.0f;
 static bool     tap_pending  = false;
 static uint32_t tap_last_ms  = 0;
 static uint32_t tap_count    = 0;
+// Consecutive-sample counter for tap hold-time qualification.
+// A tap fires when the delta has been above TAP_THRESH_G for exactly
+// TAP_MIN_SAMPLES consecutive samples — then it is ignored for the rest of
+// the ring.  Requires a sustained impulse, rejects single-sample SPI
+// corruption and brief environmental spikes.
+static bool  tap_above = false;
+#define TAP_MIN_SAMPLES 3u
 
 // Running sample counter for show_acc().
 static uint32_t sample_count = 0;
+
+// Tap-pipeline diagnostic counters — reset on accel_start(), shown by show_acc().
+//   discard_count   : samples rejected by the 0.3–3.5 g plausibility gate
+//   gate_hi_count   : samples above MAG_GATE_HI (the tap-magnitude zone)
+//   tap_thresh_count: rising edges where delta exceeded TAP_THRESH_G
+//   tap_debounce_ct : rising edges blocked by the debounce window
+//   mag_peak        : highest magnitude seen (helps spot FS saturation)
+//   tap_delta_peak  : highest (mag_raw − mag_flt) seen (compare to TAP_THRESH_G)
+static uint32_t discard_count    = 0;
+static uint32_t gate_hi_count    = 0;
+static uint32_t tap_thresh_count = 0;
+static uint32_t tap_debounce_ct  = 0;
+static float    mag_peak         = 0.0f;
+static float    tap_delta_peak   = 0.0f;
 
 // Task running state.  Set by accel_start(), cleared by accel_stop().
 // accel_poll() checks this before rescheduling.
@@ -233,7 +256,11 @@ static volatile bool accel_running = false;
 #define ANGLE_THRESH 1.0f
 
 // Tap: instantaneous magnitude must exceed filtered baseline by this much (g).
-#define TAP_THRESH_G 0.35f
+// mag_flt stays near 1.0 g (IIR gate excludes high-magnitude samples), so
+// this is effectively a floor on the total spike magnitude of 1g + TAP_THRESH_G.
+// Desk vibration / footsteps rarely exceed 0.3 g above baseline; a deliberate
+// finger tap on the PCB produces 1.5–3 g above baseline.  Set conservatively.
+#define TAP_THRESH_G 1.5f
 
 // Minimum time between consecutive tap events (ms).
 #define TAP_DEBOUNCE 400u
@@ -251,24 +278,46 @@ static void accel_update_sample(float ax, float ay, float az)
 {
     float mag_raw = sqrtf(ax*ax + ay*ay + az*az);
 
-    // Discard samples outside the physically plausible range.
-    if (mag_raw < 0.3f || mag_raw > 2.5f) return;
+    if (mag_raw > mag_peak) mag_peak = mag_raw;
 
-    // Tap detection runs before the gate so taps are still registered even
-    // though the spike sample is not used for orientation.
+    // Discard samples outside the physically plausible range.
+    // Upper bound is the 3-D diagonal of the ±2 g full-scale range:
+    // sqrt(3 × 2²) = 3.46 g.  Use 3.5 g to pass genuine tap spikes
+    // (observed up to ~2.9 g) while still rejecting SPI corruption.
+    if (mag_raw < 0.3f || mag_raw > 3.5f) { discard_count++; return; }
+
+    // Tap detection runs before the orientation gate.
     float    mag_flt = sqrtf(ax_f*ax_f + ay_f*ay_f + az_f*az_f);
+    float    delta   = mag_raw - mag_flt;
     uint32_t now     = HAL_GetTick();
-    if ((mag_raw - mag_flt) > TAP_THRESH_G &&
-        (now - tap_last_ms) > TAP_DEBOUNCE) {
-        tap_pending = true;
-        tap_last_ms = now;
-        tap_count++;
+
+    if (delta > tap_delta_peak) tap_delta_peak = delta;
+
+    if (delta > TAP_THRESH_G) {
+        if (!tap_above) {
+            // Rising edge: first sample above threshold — one tap event.
+            tap_above = true;
+            tap_thresh_count++;
+            if ((now - tap_last_ms) > TAP_DEBOUNCE) {
+                // tap_pending = true;
+                tap_last_ms = now;
+                tap_count++;
+            } else {
+                tap_debounce_ct++;
+            }
+        }
+        // Sustained samples above threshold (ringing): ignored.
+    } else {
+        tap_above = false;   // signal returned below threshold; next crossing is a new tap
     }
 
     // Orientation filter: only update when the sample is close to 1 g.
     // Taps, impacts and strong vibration push mag outside the gate and are
     // ignored here, keeping the 3-D model smooth.
-    if (mag_raw < MAG_GATE_LO || mag_raw > MAG_GATE_HI) return;
+    if (mag_raw < MAG_GATE_LO || mag_raw > MAG_GATE_HI) {
+        if (mag_raw > MAG_GATE_HI) gate_hi_count++;
+        return;
+    }
 
     // Adaptive time constant: slow when the board is stationary (suppresses
     // angular noise near flat), faster when being deliberately tilted.
@@ -308,35 +357,59 @@ static void accel_maybe_push(void)
     }
 }
 
+// tabulator
+#define ROWS 1000
+
+short table[3][ROWS];
+Short row = 0;
+
+void accel_stop(void);
+
+void dump_table() {
+    print("\nx,y,z");
+    for (Short i = 0; i < ROWS; i++) {
+        printCr();
+        printDec(table[0][i]), printChar(',');
+        printDec(table[1][i]), printChar(',');
+        printDec(table[2][i]);
+    }
+    accel_stop();
+}
+
+void tabulate(short rx, short ry, short rz) {
+    if (row == ROWS)  return;
+    table[0][row] = rx;
+    table[1][row] = ry;
+    table[2][row] = rz;
+    if (++row == ROWS)  { dump_table(); row = 0; }
+}
+
 // ── LIS3DSH path: FIFO batch (event-loop) ────────────────────────────────────
 
 static void accel_batch_process(void)
 {
     uint32_t bmcr = accel_spi_begin();
+    
+	// if (lis_read(LIS3DSH_FIFO_SRC) & 0x40u) { // OVRN_FIFO bit: reset
+    //     lis_write(LIS3DSH_CTRL_REG6, 0x80 | LIS3DSH_CTRL6_VAL); // restart
+	// 	accel_spi_end(bmcr);
+	// 	return;
+	// }
 
-    uint8_t fifo_src = lis_read(LIS3DSH_FIFO_SRC);
-    uint8_t count    = fifo_src & 0x1Fu;   // FSS[4:0]
-    if (count == 0) {
-        if (fifo_src & 0x20u) {            // EMPTY bit: nothing to drain
-            accel_spi_end(bmcr);
-            return;
-        }
-        count = 32u;                       // FSS=0 when FIFO exactly full
-    }
+    // while((lis_read(LIS3DSH_FIFO_SRC) & 0x20) != 0x20) // EMPTY bit:
+    //     lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch + count*6, 6u), count++;
 
-    lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch, (uint16_t)(count * 6u));
-
+    lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch, 6u);
     accel_spi_end(bmcr);
 
     tap_pending = false;
-    for (uint8_t i = 0; i < count; i++) {
-        uint8_t *s  = raw_batch + (size_t)i * 6u;
-        int16_t  rx = (int16_t)(((uint16_t)s[1] << 8) | s[0]);
-        int16_t  ry = (int16_t)(((uint16_t)s[3] << 8) | s[2]);
-        int16_t  rz = (int16_t)(((uint16_t)s[5] << 8) | s[4]);
-        accel_update_sample(rx * LIS3DSH_SENS, ry * LIS3DSH_SENS, rz * LIS3DSH_SENS);
-    }
-    sample_count += count;
+    uint8_t *s  = raw_batch;
+    int16_t  rx = (int16_t)(((uint16_t)s[1] << 8) | s[0]);
+    int16_t  ry = (int16_t)(((uint16_t)s[3] << 8) | s[2]);
+    int16_t  rz = (int16_t)(((uint16_t)s[5] << 8) | s[4]);
+    tabulate(rx, ry, rz);
+    accel_update_sample(rx * LIS3DSH_SENS, ry * LIS3DSH_SENS, rz * LIS3DSH_SENS);
+    sample_count++;
 
     accel_maybe_push();
 }
@@ -354,13 +427,50 @@ void accel_regs_read(void) // ( a n )
     hbytes(data, n);
 }
 
+void accel_reg_write() { // ( n a )
+    Byte address = ret();
+    Byte n = ret();
+    uint32_t bmcr = accel_spi_begin();
+    lis_write(address, n);
+    accel_spi_end(bmcr);
+
+}
+
+void xyz_read(void) {
+    Byte n = 6;
+    Byte address = 0x28u | 0x80u;
+    Byte data[n];
+
+    uint32_t bmcr = accel_spi_begin();
+    lis_read_burst(address, data, n);
+    accel_spi_end(bmcr);
+
+    print("\nX: "),printDec((short)(data[1]<<8|data[0]));
+    print("  Y: "),printDec((short)(data[3]<<8|data[2]));
+    print("  Z: "),printDec((short)(data[5]<<8|data[4]));
+}
+
 // Soft-scheduled FIFO poll.  Reschedules itself via after() while running;
 // stops automatically when accel_running is cleared by accel_stop().
 static void accel_poll(void)
 {
     if (!accel_running) return;
-    after(msec(ACCEL_POLL_MS), accel_poll);
-    accel_batch_process();
+    in(msec(ACCEL_POLL_MS), accel_poll);
+    later(accel_batch_process);
+}
+
+// Heartbeat: keeps the browser's green indicator alive when the board is still
+// and no orientation data is being pushed.  Sends {"run":1} every second so
+// the browser's 3-second timeout is never reached during normal operation.
+// Also ensures any browser that (re)connects mid-session goes green within 1 s
+// without needing a dedicated "send state on connect" mechanism.
+#define HEARTBEAT_MS 1000u
+
+static void accel_heartbeat(void)
+{
+    if (!accel_running) return;
+    after(msec(HEARTBEAT_MS), accel_heartbeat);
+    http_accel_state(true);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -373,6 +483,7 @@ void accel_init(void)
     if (once == false) {
         once = true;
         namedAction(accel_poll);
+        namedAction(accel_heartbeat);
     }
 
     CS_HIGH();
@@ -405,12 +516,20 @@ void accel_start(void)
 
     uint32_t bmcr = accel_spi_begin();
     lis_write(LIS3DSH_CTRL_REG6,  LIS3DSH_CTRL6_VAL);     // FIFO_EN | WTM_EN | ADD_INC
-    lis_write(LIS3DSH_FIFO_CTRL,  LIS3DSH_FIFO_CTRL_VAL); // stream + WTM=25
+    // lis_write(LIS3DSH_FIFO_CTRL,  LIS3DSH_FIFO_CTRL_VAL); // stream + WTM=25
     accel_spi_end(bmcr);
 
     accel_running = true;
+
+    // Reset diagnostic counters and tap edge state for a clean read after each start.
+    sample_count = 0; discard_count = 0; gate_hi_count = 0;
+    tap_thresh_count = 0; tap_debounce_ct = 0;
+    mag_peak = 0.0f; tap_delta_peak = 0.0f;
+    tap_above = false;
+
     http_accel_state(true);
     after(msec(ACCEL_POLL_MS), accel_poll);
+    after(msec(HEARTBEAT_MS), accel_heartbeat);
 }
 
 void accel_stop(void)
@@ -486,10 +605,24 @@ void show_acc(void)
         printCr();
     }
 
-    // ── Filtered acceleration and counters ──
+    // ── Filtered acceleration ──
     print("ax:      "); printFloat(ax_f, 3); print(" g"); printCr();
     print("ay:      "); printFloat(ay_f, 3); print(" g"); printCr();
     print("az:      "); printFloat(az_f, 3); print(" g"); printCr();
-    print("Samples: "); printDec(sample_count); printCr();
-    print("Taps:    "); printDec(tap_count);    printCr();
+
+    // ── Sample pipeline counters ──
+    print("Samples: "); printDec(sample_count);  printCr();
+    print("Discard: "); printDec(discard_count);
+    print("  (outside 0.3-3.5 g)"); printCr();
+    print("Gate-hi: "); printDec(gate_hi_count);
+    print("  (above "); printFloat(MAG_GATE_HI, 2); print(" g — tap zone)"); printCr();
+
+    // ── Tap diagnostics ──
+    print("Tap thr: "); printFloat(TAP_THRESH_G, 3); print(" g  (threshold)"); printCr();
+    print("δ|g|peak:"); printFloat(tap_delta_peak, 3);
+    print(" g  (peak mag_raw - mag_flt seen)"); printCr();
+    print("|g| peak:"); printFloat(mag_peak, 3); print(" g  (peak raw magnitude)"); printCr();
+    print("Thr hits:"); printDec(tap_thresh_count);
+    print("  debounced: "); printDec(tap_debounce_ct); printCr();
+    print("Taps:    "); printDec(tap_count); printCr();
 }

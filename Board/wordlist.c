@@ -32,7 +32,9 @@ NAMES(wordnames)
 	NAME("accon")		//  start accerloeromete
 	NAME("accoff")		//  stop accelerometer
 	NAME("accel_init")		//  init accelerometer interface
-	NAME("accread")		//  ( a n ) read n registers starting at a
+	NAME("accread")		//  ( a n ) read n accelerometer registers starting at a
+	NAME("accwrite")		//  ( n a ) write n to accelerometer register a
+	NAME("xyz")		//  display current accelerometer values
 	NAME("show-ADC")		//  show all adc inputs
 	NAME("show-dac")		//  show DAC sine wave output: frequency, samples, timer registers
 	NAME("dacon")		//  start sine wave on PA4
@@ -182,6 +184,8 @@ void accel_start(void);
 void accel_stop(void);
 void accel_init(void);
 void accel_regs_read(void);
+void accel_reg_write(void);
+void xyz_read(void);
 void show_adc(void);
 void show_dac(void);
 void DAC_Sine_Start(void);
@@ -331,6 +335,8 @@ BODIES(wordbodies)
 	BODY(accel_stop)
 	BODY(accel_init)
 	BODY(accel_regs_read)
+	BODY(accel_reg_write)
+	BODY(xyz_read)
 	BODY(show_adc)
 	BODY(show_dac)
 	BODY(DAC_Sine_Start)
