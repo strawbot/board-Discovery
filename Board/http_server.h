@@ -40,4 +40,15 @@ void http_accel_push(int16_t gx1000, int16_t gy1000, int16_t gz1000, bool tap);
 // immediately rather than waiting for the 2-second data-flow timeout.
 void http_accel_state(bool running);
 
+// Push one 100-sample chunk of raw int16 data to any connected /graph_stream
+// SSE client.  ch_idx: 0=X, 1=Y, 2=Z.  start: sample offset within the
+// 1000-sample capture.  data: pointer to slice.  count: samples in slice.
+// No-op if no client is connected.
+void http_graph_push_chunk(uint8_t ch_idx, uint16_t start,
+                           const short *data, uint16_t count);
+
+// Send {"done":1} to the /graph_stream SSE client after the last chunk,
+// signalling the browser to render all three channels.  No-op if no client.
+void http_graph_done(void);
+
 #endif // HTTP_SERVER_H

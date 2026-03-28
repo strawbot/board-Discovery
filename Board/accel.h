@@ -44,4 +44,8 @@ bool accel_is_running(void);
 // and tap count.
 void show_acc(void);
 
+// show_regs — read and decode every LIS3DSH control/status register over SPI
+// and print a human-readable summary.  Safe to call while accel is running.
+void show_regs(void);
+
 #endif // ACCEL_H

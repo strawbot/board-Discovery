@@ -254,19 +254,17 @@ static const char index_html_data[] =
     "function acDisconnect(){"
     "if(AC.es){AC.es.close();AC.es=null;}}"
 
-    /* ── Graph — dataset line-chart viewer ── */
-    /* graph_dataset(data,n) is the public API:                             */
-    /*   data  – array-like of numeric samples (JS Array, Float32Array …)  */
-    /*   n     – number of samples to use; omit / undefined → data.length  */
-    /* Each call replaces the previous dataset and redraws immediately.    */
-    /* grConnect() / grDisconnect() manage the /graph_stream SSE feed;     */
-    /* the firmware side sends JSON lines:  {"d":[v0,v1,…,vN-1]}           */
-    "var GR={es:null,data:null};"
-    "function graph_dataset(data,n){"
-    "var len=(n!==undefined)?n:data.length;"
-    "var a=new Array(len);"
+    /* ── Graph — three-channel line-chart viewer ────────────────────────── */
+    /* Firmware pushes raw int16 samples via /graph_stream SSE in chunks:   */
+    /*   {"ch":"x","s":0,"d":[v0,...,v99]}  — channel + offset + 100 vals  */
+    /*   ... (10 chunks × 3 channels)                                       */
+    /*   {"done":1}  — render all three channels                            */
+    /* X = green  Y = blue  Z = red  (raw ADC counts, ±32768 FS at ±2 g)   */
+    "var GR={es:null,bufs:{x:null,y:null,z:null}};"
+    "function graph_dataset(data,n){"   /* legacy single-channel shim */
+    "var len=(n!==undefined)?n:data.length,a=new Array(len);"
     "for(var i=0;i<len;i++)a[i]=+data[i];"
-    "GR.data=a;grDraw();}"
+    "GR.bufs.x=a;grDraw();}"
     "function grInit(){"
     "var cv=document.getElementById('gr-cv');"
     "if(!cv)return;"
@@ -275,22 +273,29 @@ static const char index_html_data[] =
     "var cv=document.getElementById('gr-cv');"
     "if(!cv)return;"
     "if(!cv.width)grInit();"
-    "var ctx=cv.getContext('2d'),W=cv.width,H=cv.height,d=GR.data;"
+    "var ctx=cv.getContext('2d'),W=cv.width,H=cv.height;"
     "ctx.fillStyle='#111';ctx.fillRect(0,0,W,H);"
-    "if(!d||!d.length){"
+    /* Gather non-empty channels */
+    "var chs=[{k:'x',c:'#0f0'},{k:'y',c:'#08f'},{k:'z',c:'#f55'}];"
+    "var valid=chs.filter(function(c){return GR.bufs[c.k]&&GR.bufs[c.k].length;});"
+    "if(!valid.length){"
     "ctx.fillStyle='#444';ctx.font='13px monospace';ctx.textAlign='center';"
     "ctx.fillText('no data',W/2,H/2);return;}"
-    "var n=d.length,mn=d[0],mx=d[0];"
-    "for(var i=1;i<n;i++){if(d[i]<mn)mn=d[i];if(d[i]>mx)mx=d[i];}"
+    /* Global min/max across all channels */
+    "var mn=Infinity,mx=-Infinity;"
+    "valid.forEach(function(ch){"
+    "var d=GR.bufs[ch.k];"
+    "for(var i=0;i<d.length;i++){if(d[i]<mn)mn=d[i];if(d[i]>mx)mx=d[i];}});"
     "if(mn===mx){mn-=1;mx+=1;}"
+    "var n=GR.bufs[valid[0].k].length;"
     "var ml=46,mr=8,mt=10,mb=22,pw=W-ml-mr,ph=H-mt-mb;"
-    /* y-grid + labels */
+    /* y-grid + labels (integer — raw ADC counts) */
     "ctx.font='10px monospace';ctx.textAlign='right';"
     "for(var s=0;s<=5;s++){"
     "var gy=mt+ph*s/5;"
     "ctx.strokeStyle='#1e1e1e';ctx.lineWidth=1;"
     "ctx.beginPath();ctx.moveTo(ml,gy);ctx.lineTo(ml+pw,gy);ctx.stroke();"
-    "ctx.fillStyle='#555';ctx.fillText((mx-(mx-mn)*s/5).toFixed(2),ml-3,gy+3);}"
+    "ctx.fillStyle='#555';ctx.fillText((mx-(mx-mn)*s/5).toFixed(0),ml-3,gy+3);}"
     /* x-labels */
     "var xs=Math.min(n-1,8);ctx.textAlign='center';"
     "for(var s=0;s<=xs;s++){"
@@ -300,21 +305,35 @@ static const char index_html_data[] =
     "ctx.strokeStyle='#444';ctx.lineWidth=1;"
     "ctx.beginPath();ctx.moveTo(ml,mt);ctx.lineTo(ml,mt+ph);"
     "ctx.lineTo(ml+pw,mt+ph);ctx.stroke();"
-    /* line */
-    "ctx.strokeStyle='#0f0';ctx.lineWidth=1.5;ctx.beginPath();"
-    "for(var i=0;i<n;i++){"
-    "var px=ml+pw*i/(n>1?n-1:1),py=mt+ph*(1-(d[i]-mn)/(mx-mn));"
+    /* one line per channel */
+    "valid.forEach(function(ch){"
+    "var d=GR.bufs[ch.k],cnt=d.length;"
+    "ctx.strokeStyle=ch.c;ctx.lineWidth=1.5;ctx.beginPath();"
+    "for(var i=0;i<cnt;i++){"
+    "var px=ml+pw*i/(cnt>1?cnt-1:1),py=mt+ph*(1-(d[i]-mn)/(mx-mn));"
     "if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}"
-    "ctx.stroke();"
+    "ctx.stroke();});"
     /* hud */
     "var h=document.getElementById('gr-hud');"
-    "if(h)h.textContent='n='+n+'  min='+mn.toFixed(3)+'  max='+mx.toFixed(3);}"
+    "if(h)h.textContent='n='+n+'  min='+mn.toFixed(0)+'  max='+mx.toFixed(0)"
+    "+'  \u2014  x=green  y=blue  z=red';}"
     "function grConnect(){"
     "if(GR.es)return;"
     "if(!document.getElementById('gr-cv').width)grInit();"
     "GR.es=new EventSource('/graph_stream');"
     "GR.es.onmessage=function(e){"
-    "try{var p=JSON.parse(e.data);if(p.d&&p.d.length)graph_dataset(p.d,p.d.length);}catch(ex){}};"
+    "try{"
+    "var p=JSON.parse(e.data);"
+    /* chunked multi-channel: accumulate into per-channel buffer */
+    "if(p.ch&&p.d){"
+    "if(!GR.bufs[p.ch])GR.bufs[p.ch]=[];"
+    "var s=p.s||0;"
+    "for(var i=0;i<p.d.length;i++)GR.bufs[p.ch][s+i]=p.d[i];"
+    /* draw when all three channels have received their last chunk */
+    "}else if(p.done){grDraw();}"
+    /* legacy single-channel {"d":[...]} */
+    "else if(p.d&&!p.ch){GR.bufs.x=p.d;grDraw();}"
+    "}catch(ex){}};"
     "GR.es.onerror=function(){};}"
     "function grDisconnect(){"
     "if(GR.es){GR.es.close();GR.es=null;}}"

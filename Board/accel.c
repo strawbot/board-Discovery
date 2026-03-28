@@ -182,20 +182,20 @@ static void lis_read_fifo(uint8_t cmd, uint8_t *buf, uint16_t n)
 // FIFO_CTRL: Stream mode (FMODE=010), watermark=25 →  0x59
 #define LIS3DSH_CTRL4_VAL     0x6Fu
 #define LIS3DSH_CTRL5_VAL     0x00u
-#define LIS3DSH_CTRL6_VAL     (/*0x40u | 0x20u | */0x10u)  // FIFO_EN | WTM_EN | ADD_INC
+#define LIS3DSH_CTRL6_VAL     (0x40u | 0x20u | 0x10u)  // FIFO_EN | WTM_EN | ADD_INC
 #define LIS3DSH_FIFO_CTRL_VAL ((0x02u << 5) | 25u)     // stream + WTM=25
 
 #define LIS3DSH_FIFO_WTM      25u  // samples per batch → 4 Hz push rate at 100 Hz ODR
 
 // Burst address for FIFO reads: R/W=1, MS=1 (auto-increment 0x28–0x2D per sample).
-#define LIS3DSH_BURST_CMD  (0x80u | 0x40u | LIS3DSH_OUT_X_L)
+#define LIS3DSH_BURST_CMD  (0x80u | LIS3DSH_OUT_X_L)
 
 // Sensitivity at FS=±2 g: 2 g / 32768 LSB.
 #define LIS3DSH_SENS  0.000061f
 
 // Poll interval (ms): at 100 Hz ODR ~10 samples accumulate per poll.
 // FIFO absorbs jitter — the MCU timing is soft, the chip timing is hard.
-#define ACCEL_POLL_MS 10
+#define ACCEL_POLL_MS 100
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -357,31 +357,62 @@ static void accel_maybe_push(void)
     }
 }
 
-// tabulator
-#define ROWS 1000
+// ── Raw-capture tabulator ─────────────────────────────────────────────────────
+//
+// Fills table[3][ROWS] with the first ROWS consecutive raw int16 samples,
+// then ships all three channels to the /graph_stream SSE client via a soft-
+// scheduled after() chain (100 samples per frame, 20 ms between frames).
+// accel_stop() is called immediately so the board goes grey on the web page.
 
-short table[3][ROWS];
-Short row = 0;
+#define ROWS          1000
+#define GR_CHUNK_SIZE 100u   // samples per SSE frame
 
-void accel_stop(void);
+static short    table[3][ROWS];
+static Short    row = 0;
 
-void dump_table() {
-    print("\nx,y,z");
-    for (Short i = 0; i < ROWS; i++) {
-        printCr();
-        printDec(table[0][i]), printChar(',');
-        printDec(table[1][i]), printChar(',');
-        printDec(table[2][i]);
-    }
-    accel_stop();
+// Graph-stream sender state — owned by graph_send_next() after() chain.
+static uint8_t  gr_ch    = 0;   // 0=X  1=Y  2=Z
+static uint16_t gr_start = 0;   // sample offset within current channel
+
+void accel_stop(void);                    // forward declaration (defined below)
+static void graph_send_next(void);        // forward declaration
+
+// dump_table — called when ROWS samples are captured.
+// Kicks off the SSE send chain and stops sampling so the board goes grey.
+static void dump_table(void)
+{
+    gr_ch    = 0;
+    gr_start = 0;
+    after(msec(20), graph_send_next);
 }
 
-void tabulate(short rx, short ry, short rz) {
-    if (row == ROWS)  return;
+static void tabulate(short rx, short ry, short rz)
+{
+    if (row == ROWS) return;
     table[0][row] = rx;
     table[1][row] = ry;
     table[2][row] = rz;
-    if (++row == ROWS)  { dump_table(); row = 0; }
+    if (++row == ROWS) { dump_table(); row = 0; }
+}
+
+// graph_send_next — sends one 100-sample chunk of the captured table to the
+// /graph_stream SSE client, then reschedules itself until all three channels
+// (X→Y→Z) are sent.  Sends {"done":1} after the last chunk so the browser
+// knows to redraw.  Silently skips if no SSE client is connected.
+static void graph_send_next(void)
+{
+    http_graph_push_chunk(gr_ch, gr_start,
+                          table[gr_ch] + gr_start, GR_CHUNK_SIZE);
+    gr_start += GR_CHUNK_SIZE;
+    if (gr_start >= ROWS) {
+        gr_start = 0;
+        gr_ch++;
+        if (gr_ch >= 3) {
+            http_graph_done();
+            return;
+        }
+    }
+    after(msec(20), graph_send_next);
 }
 
 // ── LIS3DSH path: FIFO batch (event-loop) ────────────────────────────────────
@@ -396,20 +427,24 @@ static void accel_batch_process(void)
 	// 	return;
 	// }
 
-    // while((lis_read(LIS3DSH_FIFO_SRC) & 0x20) != 0x20) // EMPTY bit:
-    //     lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch + count*6, 6u), count++;
+    Short count = 0;
+    while((lis_read(LIS3DSH_FIFO_SRC) & 0x20) != 0x20) // EMPTY bit:
+        lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch + count*6, 6u), count++;
 
-    lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch, 6u);
+    // lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch, 6u);
     accel_spi_end(bmcr);
 
-    tap_pending = false;
-    uint8_t *s  = raw_batch;
-    int16_t  rx = (int16_t)(((uint16_t)s[1] << 8) | s[0]);
-    int16_t  ry = (int16_t)(((uint16_t)s[3] << 8) | s[2]);
-    int16_t  rz = (int16_t)(((uint16_t)s[5] << 8) | s[4]);
-    tabulate(rx, ry, rz);
-    accel_update_sample(rx * LIS3DSH_SENS, ry * LIS3DSH_SENS, rz * LIS3DSH_SENS);
-    sample_count++;
+    for (uint8_t i = 0; i < count; i++) {
+        tap_pending = false;
+        uint8_t *s  = raw_batch + (size_t)i * 6u;
+        int16_t  rx = (int16_t)(((uint16_t)s[1] << 8) | s[0]);
+        int16_t  ry = (int16_t)(((uint16_t)s[3] << 8) | s[2]);
+        int16_t  rz = (int16_t)(((uint16_t)s[5] << 8) | s[4]);
+        tabulate(rx, ry, rz);
+        accel_update_sample(rx * LIS3DSH_SENS, ry * LIS3DSH_SENS, rz * LIS3DSH_SENS);
+    }
+
+    sample_count += count;
 
     accel_maybe_push();
 }
@@ -438,7 +473,7 @@ void accel_reg_write() { // ( n a )
 
 void xyz_read(void) {
     Byte n = 6;
-    Byte address = 0x28u | 0x80u;
+    Byte address = LIS3DSH_OUT_X_L | 0x80u;
     Byte data[n];
 
     uint32_t bmcr = accel_spi_begin();
@@ -484,6 +519,7 @@ void accel_init(void)
         once = true;
         namedAction(accel_poll);
         namedAction(accel_heartbeat);
+        namedAction(graph_send_next);
     }
 
     CS_HIGH();
@@ -516,7 +552,7 @@ void accel_start(void)
 
     uint32_t bmcr = accel_spi_begin();
     lis_write(LIS3DSH_CTRL_REG6,  LIS3DSH_CTRL6_VAL);     // FIFO_EN | WTM_EN | ADD_INC
-    // lis_write(LIS3DSH_FIFO_CTRL,  LIS3DSH_FIFO_CTRL_VAL); // stream + WTM=25
+    lis_write(LIS3DSH_FIFO_CTRL,  LIS3DSH_FIFO_CTRL_VAL); // stream + WTM=25
     accel_spi_end(bmcr);
 
     accel_running = true;
@@ -625,4 +661,102 @@ void show_acc(void)
     print("Thr hits:"); printDec(tap_thresh_count);
     print("  debounced: "); printDec(tap_debounce_ct); printCr();
     print("Taps:    "); printDec(tap_count); printCr();
+}
+
+// ── show_regs ─────────────────────────────────────────────────────────────────
+//
+// Reads every LIS3DSH control and status register over SPI and prints a
+// human-decoded summary, similar in style to show_acc().
+// Safe to call while accel is running — PHY isolation is applied as usual.
+
+void show_regs(void)
+{
+    uint32_t bmcr = accel_spi_begin();
+
+    uint8_t info1     = lis_read(0x07u);               // INFO1 (factory)
+    uint8_t info2     = lis_read(0x08u);               // INFO2 (factory)
+    uint8_t who_am_i  = lis_read(REG_WHO_AM_I);
+    uint8_t ctrl4     = lis_read(LIS3DSH_CTRL_REG4);
+    uint8_t ctrl5     = lis_read(LIS3DSH_CTRL_REG5);
+    uint8_t ctrl6     = lis_read(LIS3DSH_CTRL_REG6);
+    uint8_t status    = lis_read(0x27u);               // STATUS
+    uint8_t out[6];
+    lis_read_burst(0x80u | LIS3DSH_OUT_X_L, out, 6);    // OUT_X_L..OUT_Z_H burst
+    uint8_t fifo_ctrl = lis_read(LIS3DSH_FIFO_CTRL);
+    uint8_t fifo_src  = lis_read(LIS3DSH_FIFO_SRC);
+
+    accel_spi_end(bmcr);
+
+    int16_t rx = (int16_t)(((uint16_t)out[1] << 8) | out[0]);
+    int16_t ry = (int16_t)(((uint16_t)out[3] << 8) | out[2]);
+    int16_t rz = (int16_t)(((uint16_t)out[5] << 8) | out[4]);
+
+    static const char *odr_tbl[16] = {
+        "off","3.125","6.25","12.5","25","50","100","400","800","1600",
+        "?","?","?","?","?","?"
+    };
+    static const char *bw_tbl[4]   = { "800","400","200","50" };
+    static const char *fs_tbl[5]   = { "+-2g","+-4g","+-6g","+-8g","+-16g" };
+    static const char *fm_tbl[8]   = {
+        "bypass","FIFO","stream","stream->FIFO","bypass->stream","?","?","?"
+    };
+
+    print("INFO1:    0x"); dotnb(2,2,info1,16);
+    print("  INFO2:   0x"); dotnb(2,2,info2,16); printCr();
+
+    print("WHO_AM_I: 0x"); dotnb(2,2,who_am_i,16);
+    if      (who_am_i == 0x3Fu) print("  (LIS3DSH production)");
+    else if (who_am_i == 0x01u) print("  (LIS3DSH engineering)");
+    else                        print("  (UNKNOWN)");
+    printCr();
+
+    // CTRL_REG4
+    print("CTRL_REG4 [0x20] = 0x"); dotnb(2,2,ctrl4,16);
+    print("   ODR="); print(odr_tbl[(ctrl4 >> 4) & 0xFu]); print(" Hz");
+    print("  BDU="); printDec((ctrl4 >> 3) & 1u);
+    print("  ZEN="); printDec((ctrl4 >> 2) & 1u);
+    print("  YEN="); printDec((ctrl4 >> 1) & 1u);
+    print("  XEN="); printDec( ctrl4        & 1u); printCr();
+
+    // CTRL_REG5
+    uint8_t fscale = (ctrl5 >> 3) & 7u;
+    print("CTRL_REG5 [0x24] = 0x"); dotnb(2,2,ctrl5,16);
+    print("   BW="); print(bw_tbl[(ctrl5 >> 6) & 3u]); print(" Hz");
+    print("  FS="); print(fscale < 5u ? fs_tbl[fscale] : "?"); printCr();
+
+    // CTRL_REG6
+    print("CTRL_REG6 [0x25] = 0x"); dotnb(2,2,ctrl6,16);
+    print("   BOOT=");    printDec((ctrl6 >> 7) & 1u);
+    print("  FIFO_EN=");  printDec((ctrl6 >> 6) & 1u);
+    print("  WTM_EN=");   printDec((ctrl6 >> 5) & 1u);
+    print("  ADD_INC=");  printDec((ctrl6 >> 4) & 1u);
+    print("  I2C_DIS=");  printDec((ctrl6 >> 3) & 1u); printCr();
+
+    // STATUS
+    print("STATUS    [0x27] = 0x"); dotnb(2,2,status,16);
+    print("   ZYXDA="); printDec((status >> 3) & 1u);
+    print("  ZDA=");    printDec((status >> 2) & 1u);
+    print("  YDA=");    printDec((status >> 1) & 1u);
+    print("  XDA=");    printDec( status        & 1u);
+    print("  ZYXOR=");  printDec((status >> 7) & 1u); printCr();
+
+    // FIFO_CTRL
+    print("FIFO_CTRL [0x2E] = 0x"); dotnb(2,2,fifo_ctrl,16);
+    print("   FMODE="); print(fm_tbl[(fifo_ctrl >> 5) & 7u]);
+    print("  FTH="); printDec(fifo_ctrl & 0x1Fu); printCr();
+
+    // FIFO_SRC
+    print("FIFO_SRC  [0x2F] = 0x"); dotnb(2,2,fifo_src,16);
+    print("   WTM=");   printDec((fifo_src >> 7) & 1u);
+    print("  OVRN=");   printDec((fifo_src >> 6) & 1u);
+    print("  EMPTY=");  printDec((fifo_src >> 5) & 1u);
+    print("  FSS=");    printDec( fifo_src        & 0x1Fu); printCr();
+
+    // Live output register snapshot
+    print("OUT_X: "); printDec(rx);
+    print("  ("); printFloat(rx * LIS3DSH_SENS, 4); print(" g)");
+    print("  OUT_Y: "); printDec(ry);
+    print("  ("); printFloat(ry * LIS3DSH_SENS, 4); print(" g)");
+    print("  OUT_Z: "); printDec(rz);
+    print("  ("); printFloat(rz * LIS3DSH_SENS, 4); print(" g)"); printCr();
 }

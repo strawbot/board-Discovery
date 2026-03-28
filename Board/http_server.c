@@ -209,6 +209,68 @@ static http_conn_t *accel_sse_conn = NULL;
 
 static const http_response_t accel_sse_sentinel = { NULL, 0 };
 
+/* --- GET /graph_stream — SSE push for raw-capture graph data ------------- */
+//
+// Firmware pushes three channels of int16 data in 100-sample chunks:
+//   {"ch":"x","s":0,"d":[v0,...,v99]}
+//   {"ch":"x","s":100,"d":[v100,...,v199]}
+//   ... (10 chunks × 3 channels = 30 frames total)
+//   {"done":1}
+// Browser accumulates chunks by channel and redraws on "done".
+// At most one client at a time; a new connection evicts the previous one.
+
+static http_conn_t *graph_sse_conn = NULL;
+
+static const http_response_t graph_sse_sentinel = { NULL, 0 };
+
+// http_graph_push_chunk — public; called by accel.c's graph_send_next() chain.
+// ch_idx: 0=X, 1=Y, 2=Z.  start: sample offset.  data/count: slice to send.
+// Builds and writes the SSE frame.  No-op if no client is connected or if the
+// send buffer is too full (the 20 ms inter-chunk delay normally prevents that).
+void http_graph_push_chunk(uint8_t ch_idx, uint16_t start,
+                           const short *data, uint16_t count)
+{
+    if (!graph_sse_conn || !graph_sse_conn->pcb) return;
+
+    static const char ch_names[] = "xyz";
+    char ch = (ch_idx < 3u) ? ch_names[ch_idx] : '?';
+
+    // Build: data: {"ch":"x","s":NNN,"d":[v0,...,vN-1]}\n\n
+    // Max frame size: 6 + 22 + 100×8 + 5 = ~833 bytes → 900-byte buffer is safe.
+    static char frame[900];
+    int pos = snprintf(frame, sizeof(frame),
+                       "data: {\"ch\":\"%c\",\"s\":%u,\"d\":[", ch, (unsigned)start);
+    for (uint16_t i = 0; i < count; i++) {
+        pos += snprintf(frame + pos, (int)sizeof(frame) - pos,
+                        "%s%d", i ? "," : "", (int)data[i]);
+    }
+    pos += snprintf(frame + pos, (int)sizeof(frame) - pos, "]}\n\n");
+
+    if (tcp_sndbuf(graph_sse_conn->pcb) >= (u16_t)pos) {
+        tcp_write(graph_sse_conn->pcb, frame, (u16_t)pos, TCP_WRITE_FLAG_COPY);
+        tcp_output(graph_sse_conn->pcb);
+    }
+}
+
+// http_graph_done — public; called after the last chunk to signal the browser
+// to draw.  Sends {"done":1} as a final SSE frame.
+void http_graph_done(void)
+{
+    if (!graph_sse_conn || !graph_sse_conn->pcb) return;
+    static const char frame[] = "data: {\"done\":1}\n\n";
+    if (tcp_sndbuf(graph_sse_conn->pcb) >= (u16_t)(sizeof(frame) - 1u)) {
+        tcp_write(graph_sse_conn->pcb, frame, (u16_t)(sizeof(frame) - 1u),
+                  TCP_WRITE_FLAG_COPY);
+        tcp_output(graph_sse_conn->pcb);
+    }
+}
+
+static const http_response_t *handle_graph_sse(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+    return &graph_sse_sentinel;   // http_recv() handles the SSE upgrade
+}
+
 // http_accel_push — public; called by accel.c on each significant sample.
 // gx1000 / gy1000 / gz1000 are normalised gravity components × 1000.
 // tap is true for one call on a detected tap event.
@@ -389,6 +451,7 @@ static const http_route_t http_routes[] = {
     { "GET",  "/status.json",    NULL,        handle_status      },
     { "GET",  "/status_stream",  NULL,        handle_status_sse  },
     { "GET",  "/accel_stream",   NULL,        handle_accel_sse   },
+    { "GET",  "/graph_stream",   NULL,        handle_graph_sse   },
     { "GET",  "/term_stream",    NULL,        handle_term_sse    },
     { "POST", "/term_in",        NULL,        handle_term_in     },
 };
@@ -402,6 +465,7 @@ static void conn_close(http_conn_t *c)
     if (c == sse_conn)        sse_conn        = NULL;   // un-register terminal SSE
     if (c == status_sse_conn) status_sse_conn = NULL;   // un-register status SSE
     if (c == accel_sse_conn)  accel_sse_conn  = NULL;   // un-register accel SSE
+    if (c == graph_sse_conn)  graph_sse_conn  = NULL;   // un-register graph SSE
     struct tcp_pcb *pcb = c->pcb;
     tcp_arg(pcb,  NULL);
     tcp_recv(pcb, NULL);
@@ -572,6 +636,26 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                 tcp_output(c->pcb);
                 // First sample will arrive within 40 ms from accel_sample().
 
+            } else if (resp == &graph_sse_sentinel) {
+                // Promote connection to persistent graph SSE stream.
+                // Evict any existing subscriber first.
+                if (graph_sse_conn && graph_sse_conn->pcb)
+                    conn_close(graph_sse_conn);
+                graph_sse_conn = c;
+                c->state = HTTP_SSE;
+                tcp_poll(c->pcb, NULL, 0);      // disable idle timeout
+
+                static const char gr_sse_hdr[] =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/event-stream\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n";
+                tcp_write(c->pcb, gr_sse_hdr, sizeof(gr_sse_hdr) - 1,
+                          TCP_WRITE_FLAG_COPY);
+                tcp_output(c->pcb);
+                // Data arrives in chunks when dump_table() fires after a capture.
+
             } else {
                 c->tx_ptr       = resp->data;
                 c->tx_remaining = resp->length;
@@ -621,6 +705,7 @@ static void http_err(void *arg, err_t err) {
         if (c == sse_conn)        sse_conn        = NULL;
         if (c == status_sse_conn) status_sse_conn = NULL;
         if (c == accel_sse_conn)  accel_sse_conn  = NULL;
+        if (c == graph_sse_conn)  graph_sse_conn  = NULL;
         c->pcb = NULL;
         conn_free(c);
     }
@@ -694,6 +779,7 @@ void http_server_stop(void) {
     sse_conn        = NULL;    // cleared before conn_close loop to avoid double-clear
     status_sse_conn = NULL;
     accel_sse_conn  = NULL;
+    graph_sse_conn  = NULL;
     // Close all active connections.
     for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++) {
         if (conns[i].state != HTTP_IDLE) {
