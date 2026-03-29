@@ -106,7 +106,17 @@ static const char index_html_data[] =
     "</div>"
     "<div id=\"ac-right\">"
     "<canvas id=\"gr-cv\"></canvas>"
-    "<div id=\"gr-hud\">no data</div>"
+    "<div style=\"display:flex;align-items:center;gap:8px;margin-top:4px\">"
+    "<button id=\"gr-btn\" onclick=\"grToggle()\""
+    " style=\"background:#222;color:#0f0;border:1px solid #444;"
+             "padding:2px 10px;cursor:pointer;font-family:monospace;"
+             "font-size:13px\">&#9654;</button>"
+    "<button id=\"gr-mode\" onclick=\"grModeToggle()\""
+    " style=\"background:#222;color:#aaa;border:1px solid #444;"
+             "padding:2px 10px;cursor:pointer;font-family:monospace;"
+             "font-size:13px\">Raw</button>"
+    "<div id=\"gr-hud\" style=\"font-size:12px;color:#666\">no data</div>"
+    "</div>"
     "</div>"
     "</div>"
 
@@ -118,7 +128,10 @@ static const char index_html_data[] =
     "document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));"
     "document.getElementById(id).classList.add('on');el.classList.add('on');"
     "if(id==='st')stConnect();else stDisconnect();"
-    "if(id==='ac'){acConnect();grConnect();}else{acDisconnect();grDisconnect();}}"
+    "if(id==='ac'){acConnect();grConnect();"
+    "var gb=document.getElementById('gr-btn');"
+    "if(gb)gb.innerHTML=GR.paused?'&#9654;':'&#9646;&#9646;';"
+    "}else{acDisconnect();grDisconnect();}}"
 
     /* ── Status SSE ── */
     "var stEs=null,stEpoch=0,stEpochAt=0,stBase=0,stTick=null;"
@@ -254,89 +267,147 @@ static const char index_html_data[] =
     "function acDisconnect(){"
     "if(AC.es){AC.es.close();AC.es=null;}}"
 
-    /* ── Graph — three-channel line-chart viewer ────────────────────────── */
-    /* Firmware pushes raw int16 samples via /graph_stream SSE in chunks:   */
-    /*   {"ch":"x","s":0,"d":[v0,...,v99]}  — channel + offset + 100 vals  */
-    /*   ... (10 chunks × 3 channels)                                       */
-    /*   {"done":1}  — render all three channels                            */
-    /* X = green  Y = blue  Z = red  (raw ADC counts, ±32768 FS at ±2 g)   */
-    "var GR={es:null,bufs:{x:null,y:null,z:null}};"
-    "function graph_dataset(data,n){"   /* legacy single-channel shim */
-    "var len=(n!==undefined)?n:data.length,a=new Array(len);"
-    "for(var i=0;i<len;i++)a[i]=+data[i];"
-    "GR.bufs.x=a;grDraw();}"
+    /* ── Graph — sweep display + capture viewer ──────────────────────────── */
+    /* Live mode: firmware sends {"live":[x0,y0,z0,…x9,y9,z9]} at 100 ms   */
+    /*   intervals.  Browser writes into a 1000-sample ring buffer and      */
+    /*   redraws a sweep oscilloscope trace (ring position = canvas x).     */
+    /* Capture mode: {"ch","s","d"} chunks + {"done":1} — static snapshot.  */
+    /* ▶/⏸ button connects / disconnects the SSE stream.                    */
+    /* X = green  Y = blue  Z = red  (g-units, ±2.0 g range)                */
+    "var GR_WIN=1000;"
+    "var GR={"
+    "es:null,"
+    "paused:false,"       /* user pressed pause */
+    "rawMode:true,"       /* true=raw unfiltered, false=IIR refined */
+    "ring:{x:new Float32Array(GR_WIN),y:new Float32Array(GR_WIN),"
+           "z:new Float32Array(GR_WIN),wi:0,n:0},"
+    "bufs:{x:null,y:null,z:null}"  /* capture snapshot */
+    "};"
+    /* grInit — size canvas to its rendered width */
     "function grInit(){"
     "var cv=document.getElementById('gr-cv');"
     "if(!cv)return;"
     "cv.width=cv.offsetWidth||480;cv.height=360;}"
-    "function grDraw(){"
+    /* ── Sweep draw (live) ── */
+    "function grDrawSweep(){"
     "var cv=document.getElementById('gr-cv');"
-    "if(!cv)return;"
-    "if(!cv.width)grInit();"
+    "if(!cv||!cv.width)grInit();"
     "var ctx=cv.getContext('2d'),W=cv.width,H=cv.height;"
+    "var r=GR.ring,n=Math.min(r.n,GR_WIN);"
     "ctx.fillStyle='#111';ctx.fillRect(0,0,W,H);"
-    /* Gather non-empty channels */
-    "var chs=[{k:'x',c:'#0f0'},{k:'y',c:'#08f'},{k:'z',c:'#f55'}];"
-    "var valid=chs.filter(function(c){return GR.bufs[c.k]&&GR.bufs[c.k].length;});"
-    "if(!valid.length){"
-    "ctx.fillStyle='#444';ctx.font='13px monospace';ctx.textAlign='center';"
-    "ctx.fillText('no data',W/2,H/2);return;}"
-    /* Global min/max across all channels */
-    "var mn=Infinity,mx=-Infinity;"
-    "valid.forEach(function(ch){"
-    "var d=GR.bufs[ch.k];"
-    "for(var i=0;i<d.length;i++){if(d[i]<mn)mn=d[i];if(d[i]>mx)mx=d[i];}});"
+    "if(!n)return;"
+    /* auto-scale across all three channels */
+    "var mn=Infinity,mx=-Infinity,chrs=[r.x,r.y,r.z];"
+    "for(var c=0;c<3;c++){for(var i=0;i<GR_WIN;i++){"
+    "if(chrs[c][i]<mn)mn=chrs[c][i];if(chrs[c][i]>mx)mx=chrs[c][i];}}"
     "if(mn===mx){mn-=1;mx+=1;}"
-    "var n=GR.bufs[valid[0].k].length;"
     "var ml=46,mr=8,mt=10,mb=22,pw=W-ml-mr,ph=H-mt-mb;"
-    /* y-grid + labels (integer — raw ADC counts) */
+    /* y-grid */
     "ctx.font='10px monospace';ctx.textAlign='right';"
     "for(var s=0;s<=5;s++){"
     "var gy=mt+ph*s/5;"
     "ctx.strokeStyle='#1e1e1e';ctx.lineWidth=1;"
     "ctx.beginPath();ctx.moveTo(ml,gy);ctx.lineTo(ml+pw,gy);ctx.stroke();"
-    "ctx.fillStyle='#555';ctx.fillText((mx-(mx-mn)*s/5).toFixed(0),ml-3,gy+3);}"
-    /* x-labels */
-    "var xs=Math.min(n-1,8);ctx.textAlign='center';"
-    "for(var s=0;s<=xs;s++){"
-    "var xi=Math.round(s*(n-1)/(xs||1)),gx=ml+pw*s/(xs||1);"
-    "ctx.fillStyle='#555';ctx.fillText(xi,gx,H-5);}"
+    "ctx.fillStyle='#555';ctx.fillText((mx-(mx-mn)*s/5).toFixed(3),ml-3,gy+3);}"
     /* axes */
     "ctx.strokeStyle='#444';ctx.lineWidth=1;"
     "ctx.beginPath();ctx.moveTo(ml,mt);ctx.lineTo(ml,mt+ph);"
     "ctx.lineTo(ml+pw,mt+ph);ctx.stroke();"
-    /* one line per channel */
+    /* cursor gap — dark bar at the write-head position */
+    "var cur=r.wi%GR_WIN,cx=ml+pw*cur/GR_WIN;"
+    "ctx.fillStyle='#333';ctx.fillRect(cx,mt,3,ph);"
+    /* three channel lines — ring position maps directly to canvas x */
+    "var cols=['#0f0','#08f','#f55'];"
+    "for(var c=0;c<3;c++){"
+    "var ch=chrs[c];"
+    "ctx.strokeStyle=cols[c];ctx.lineWidth=1.5;ctx.beginPath();"
+    "for(var i=0;i<GR_WIN;i++){"
+    "var px=ml+pw*i/GR_WIN,py=mt+ph*(1-(ch[i]-mn)/(mx-mn));"
+    "if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}"
+    "ctx.stroke();}"
+    /* hud */
+    "var h=document.getElementById('gr-hud');"
+    "if(h)h.textContent='live  n='+n+'  min='+mn.toFixed(3)+'  max='+mx.toFixed(3)"
+    "+'  g  \u2014  x=green  y=blue  z=red';}"
+    /* ── Capture draw (static snapshot) ── */
+    "function grDraw(){"
+    "var cv=document.getElementById('gr-cv');"
+    "if(!cv||!cv.width)grInit();"
+    "var ctx=cv.getContext('2d'),W=cv.width,H=cv.height;"
+    "ctx.fillStyle='#111';ctx.fillRect(0,0,W,H);"
+    "var chs=[{k:'x',c:'#0f0'},{k:'y',c:'#08f'},{k:'z',c:'#f55'}];"
+    "var valid=chs.filter(function(c){return GR.bufs[c.k]&&GR.bufs[c.k].length;});"
+    "if(!valid.length){"
+    "ctx.fillStyle='#444';ctx.font='13px monospace';ctx.textAlign='center';"
+    "ctx.fillText('no data',W/2,H/2);return;}"
+    "var mn=Infinity,mx=-Infinity;"
+    "valid.forEach(function(ch){var d=GR.bufs[ch.k];"
+    "for(var i=0;i<d.length;i++){if(d[i]<mn)mn=d[i];if(d[i]>mx)mx=d[i];}});"
+    "if(mn===mx){mn-=1;mx+=1;}"
+    "var n=GR.bufs[valid[0].k].length;"
+    "var ml=46,mr=8,mt=10,mb=22,pw=W-ml-mr,ph=H-mt-mb;"
+    "ctx.font='10px monospace';ctx.textAlign='right';"
+    "for(var s=0;s<=5;s++){"
+    "var gy=mt+ph*s/5;"
+    "ctx.strokeStyle='#1e1e1e';ctx.lineWidth=1;"
+    "ctx.beginPath();ctx.moveTo(ml,gy);ctx.lineTo(ml+pw,gy);ctx.stroke();"
+    "ctx.fillStyle='#555';ctx.fillText((mx-(mx-mn)*s/5).toFixed(3),ml-3,gy+3);}"
+    "ctx.strokeStyle='#444';ctx.lineWidth=1;"
+    "ctx.beginPath();ctx.moveTo(ml,mt);ctx.lineTo(ml,mt+ph);"
+    "ctx.lineTo(ml+pw,mt+ph);ctx.stroke();"
     "valid.forEach(function(ch){"
     "var d=GR.bufs[ch.k],cnt=d.length;"
     "ctx.strokeStyle=ch.c;ctx.lineWidth=1.5;ctx.beginPath();"
     "for(var i=0;i<cnt;i++){"
     "var px=ml+pw*i/(cnt>1?cnt-1:1),py=mt+ph*(1-(d[i]-mn)/(mx-mn));"
-    "if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}"
-    "ctx.stroke();});"
-    /* hud */
+    "if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}ctx.stroke();});"
     "var h=document.getElementById('gr-hud');"
-    "if(h)h.textContent='n='+n+'  min='+mn.toFixed(0)+'  max='+mx.toFixed(0)"
-    "+'  \u2014  x=green  y=blue  z=red';}"
+    "if(h)h.textContent='capture  n='+n+'  min='+mn.toFixed(3)+'  max='+mx.toFixed(3)"
+    "+'  g  \u2014  x=green  y=blue  z=red';}"
+    /* ── SSE connection management ── */
     "function grConnect(){"
-    "if(GR.es)return;"
+    "if(GR.es||GR.paused)return;"
     "if(!document.getElementById('gr-cv').width)grInit();"
     "GR.es=new EventSource('/graph_stream');"
     "GR.es.onmessage=function(e){"
     "try{"
     "var p=JSON.parse(e.data);"
-    /* chunked multi-channel: accumulate into per-channel buffer */
-    "if(p.ch&&p.d){"
+    /* live burst: interleaved x,y,z triples */
+    "if(p.live){"
+    "var arr=p.live,r=GR.ring;"
+    "for(var i=0;i<arr.length;i+=3){"
+    "var wi=r.wi%GR_WIN;"
+    "r.x[wi]=arr[i];r.y[wi]=arr[i+1];r.z[wi]=arr[i+2];"
+    "r.wi++;if(r.n<GR_WIN)r.n++;}"
+    "grDrawSweep();"
+    /* capture chunk: accumulate by channel */
+    "}else if(p.ch&&p.d){"
     "if(!GR.bufs[p.ch])GR.bufs[p.ch]=[];"
     "var s=p.s||0;"
     "for(var i=0;i<p.d.length;i++)GR.bufs[p.ch][s+i]=p.d[i];"
-    /* draw when all three channels have received their last chunk */
+    /* capture done: draw static snapshot */
     "}else if(p.done){grDraw();}"
-    /* legacy single-channel {"d":[...]} */
-    "else if(p.d&&!p.ch){GR.bufs.x=p.d;grDraw();}"
     "}catch(ex){}};"
     "GR.es.onerror=function(){};}"
     "function grDisconnect(){"
     "if(GR.es){GR.es.close();GR.es=null;}}"
+    /* ▶/⏸ toggle — connects or disconnects the SSE stream */
+    "function grToggle(){"
+    "GR.paused=!GR.paused;"
+    "var btn=document.getElementById('gr-btn');"
+    "if(GR.paused){grDisconnect();if(btn)btn.innerHTML='&#9654;';}"
+    "else{grConnect();if(btn)btn.innerHTML='&#9646;&#9646;';}}"
+    /* Raw/Refined toggle — sends mode to firmware and updates button label */
+    "function grModeToggle(){"
+    "GR.rawMode=!GR.rawMode;"
+    "var mb=document.getElementById('gr-mode');"
+    "if(mb){mb.textContent=GR.rawMode?'Raw':'Refined';"
+    "mb.style.color=GR.rawMode?'#aaa':'#4af';}"
+    "fetch('/graph_mode',{method:'POST',"
+    "body:GR.rawMode?'raw':'ref',headers:{'Content-Type':'text/plain'}});"
+    /* clear ring so stale data from the previous mode doesn't linger */
+    "GR.ring.x.fill(0);GR.ring.y.fill(0);GR.ring.z.fill(0);"
+    "GR.ring.wi=0;GR.ring.n=0;}"
 
     /* ── Visibility / focus management ── */
     "document.addEventListener('visibilitychange',()=>{"

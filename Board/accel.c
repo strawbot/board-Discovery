@@ -299,7 +299,7 @@ static void accel_update_sample(float ax, float ay, float az)
             tap_above = true;
             tap_thresh_count++;
             if ((now - tap_last_ms) > TAP_DEBOUNCE) {
-                // tap_pending = true;
+                tap_pending = true;
                 tap_last_ms = now;
                 tap_count++;
             } else {
@@ -359,40 +359,69 @@ static void accel_maybe_push(void)
 
 // ── Raw-capture tabulator ─────────────────────────────────────────────────────
 //
-// Fills table[3][ROWS] with the first ROWS consecutive raw int16 samples,
-// then ships all three channels to the /graph_stream SSE client via a soft-
-// scheduled after() chain (100 samples per frame, 20 ms between frames).
-// accel_stop() is called immediately so the board goes grey on the web page.
+// Triggered explicitly by accel_capture_start() (CLI / web button).
+// Fills table[3][ROWS] with the next ROWS samples then ships them to the
+// /graph_stream SSE client as 100-sample chunks via an after() chain.
+// Live streaming continues uninterrupted during and after the capture.
 
 #define ROWS          1000
-#define GR_CHUNK_SIZE 100u   // samples per SSE frame
+#define GR_CHUNK_SIZE 100u   // samples per SSE capture-chunk frame
 
-static short    table[3][ROWS];
+// Capture buffer — stores g-values as float regardless of mode.
+//   Raw mode:     frx = rx * LIS3DSH_SENS  (direct ADC→g, no filtering)
+//   Refined mode: ax_f, ay_f, az_f          (IIR-filtered gravity vector)
+static float    table[3][ROWS];
 static Short    row = 0;
 
 // Graph-stream sender state — owned by graph_send_next() after() chain.
 static uint8_t  gr_ch    = 0;   // 0=X  1=Y  2=Z
 static uint16_t gr_start = 0;   // sample offset within current channel
 
+// capture_active — true while a snapshot is filling; cleared by dump_table().
+// Never set automatically — must be triggered via accel_capture_start().
+static bool capture_active = false;
+
+// graph_mode_raw — selects what live streaming and capture record/send.
+//   true  (default) → raw ADC-derived g-values (unfiltered)
+//   false           → IIR-filtered g-values (ax_f, ay_f, az_f)
+// Changed at run-time by accel_set_graph_raw(), called from POST /graph_mode.
+static bool graph_mode_raw = true;
+
+void accel_set_graph_raw(bool raw) { graph_mode_raw = raw; }
+
 void accel_stop(void);                    // forward declaration (defined below)
 static void graph_send_next(void);        // forward declaration
 
-// dump_table — called when ROWS samples are captured.
-// Kicks off the SSE send chain and stops sampling so the board goes grey.
+// dump_table — called when the capture buffer is full.
+// Clears capture_active and starts the chunk-send chain.
+// Does NOT stop the accelerometer; live streaming continues.
 static void dump_table(void)
 {
-    gr_ch    = 0;
-    gr_start = 0;
+    capture_active = false;
+    gr_ch          = 0;
+    gr_start       = 0;
     after(msec(20), graph_send_next);
 }
 
-static void tabulate(short rx, short ry, short rz)
+static void tabulate(float x, float y, float z)
 {
     if (row == ROWS) return;
-    table[0][row] = rx;
-    table[1][row] = ry;
-    table[2][row] = rz;
+    table[0][row] = x;
+    table[1][row] = y;
+    table[2][row] = z;
     if (++row == ROWS) { dump_table(); row = 0; }
+}
+
+// accel_capture_start — begin a 1000-sample snapshot.
+// Once the buffer is full the data is shipped to the /graph_stream SSE client
+// as chunk messages.  Live streaming continues in parallel throughout.
+void accel_capture_start(void)
+{
+    if (!accel_running)  { print("accel: not running\r\n");        return; }
+    if (capture_active)  { print("accel: capture in progress\r\n"); return; }
+    row            = 0;
+    capture_active = true;
+    print("accel: capture started\r\n");
 }
 
 // graph_send_next — sends one 100-sample chunk of the captured table to the
@@ -427,9 +456,19 @@ static void accel_batch_process(void)
 	// 	return;
 	// }
 
-    Short count = 0;
-    while((lis_read(LIS3DSH_FIFO_SRC) & 0x20) != 0x20) // EMPTY bit:
-        lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch + count*6, 6u), count++;
+    // Short count = 0;
+    // while((lis_read(LIS3DSH_FIFO_SRC) & 0x20) != 0x20) // EMPTY bit:
+        // lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch + count*6, 6u), count++;
+    uint8_t fifo_src = lis_read(LIS3DSH_FIFO_SRC);
+    uint8_t count    = fifo_src & 0x1Fu;   // FSS[4:0]
+    if (count == 0) {
+        if (fifo_src & 0x20u) {            // EMPTY bit: nothing to drain
+            accel_spi_end(bmcr);
+            return;
+        }
+        count = 32u;                       // FSS=0 when FIFO exactly full
+    }
+    lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch, (uint16_t)(count * 6u));
 
     // lis_read_fifo(LIS3DSH_BURST_CMD, raw_batch, 6u);
     accel_spi_end(bmcr);
@@ -440,8 +479,24 @@ static void accel_batch_process(void)
         int16_t  rx = (int16_t)(((uint16_t)s[1] << 8) | s[0]);
         int16_t  ry = (int16_t)(((uint16_t)s[3] << 8) | s[2]);
         int16_t  rz = (int16_t)(((uint16_t)s[5] << 8) | s[4]);
-        tabulate(rx, ry, rz);
-        accel_update_sample(rx * LIS3DSH_SENS, ry * LIS3DSH_SENS, rz * LIS3DSH_SENS);
+        // Convert raw ADC counts to g for all downstream processing.
+        float frx = rx * LIS3DSH_SENS;
+        float fry = ry * LIS3DSH_SENS;
+        float frz = rz * LIS3DSH_SENS;
+
+        if (graph_mode_raw) {
+            // Raw mode: feed/tabulate the unfiltered g-values first,
+            // then run the IIR so orientation display is unaffected.
+            http_graph_live_feed(frx, fry, frz);
+            if (capture_active) tabulate(rx, ry, rz);
+            accel_update_sample(frx, fry, frz);
+        } else {
+            // Refined mode: IIR update runs first so ax_f/ay_f/az_f
+            // are current before feeding the graph and capture buffer.
+            accel_update_sample(frx, fry, frz);
+            http_graph_live_feed(ax_f, ay_f, az_f);
+            if (capture_active) tabulate(frx, fry, frz);
+        }
     }
 
     sample_count += count;
@@ -557,11 +612,13 @@ void accel_start(void)
 
     accel_running = true;
 
-    // Reset diagnostic counters and tap edge state for a clean read after each start.
+    // Reset diagnostic counters, tap edge state, and capture flag.
     sample_count = 0; discard_count = 0; gate_hi_count = 0;
     tap_thresh_count = 0; tap_debounce_ct = 0;
     mag_peak = 0.0f; tap_delta_peak = 0.0f;
     tap_above = false;
+    capture_active = false;
+    row = 0;
 
     http_accel_state(true);
     after(msec(ACCEL_POLL_MS), accel_poll);

@@ -21,6 +21,7 @@
 
 #include "http_server.h"
 #include "http_content.h"      // const char[] flash content + route table
+#include "accel.h"             // accel_set_graph_raw()
 #include "ntp_sync.h"          // ntp_get_utc(), ntp_is_synced()
 #include "network_init.h"      // eth_status()
 #include "usb_net.h"           // usb_netif
@@ -209,40 +210,62 @@ static http_conn_t *accel_sse_conn = NULL;
 
 static const http_response_t accel_sse_sentinel = { NULL, 0 };
 
-/* --- GET /graph_stream — SSE push for raw-capture graph data ------------- */
+/* --- GET /graph_stream — SSE push for graph data ------------------------- */
 //
-// Firmware pushes three channels of int16 data in 100-sample chunks:
-//   {"ch":"x","s":0,"d":[v0,...,v99]}
-//   {"ch":"x","s":100,"d":[v100,...,v199]}
-//   ... (10 chunks × 3 channels = 30 frames total)
-//   {"done":1}
-// Browser accumulates chunks by channel and redraws on "done".
+// Two message types share this stream:
+//
+// Live burst (10 samples, 100 ms interval):
+//   data: {"live":[x0,y0,z0, …, x9,y9,z9]}\n\n
+//   Values are g-units as 4-decimal floats.  Content is raw (rx*SENS) or
+//   IIR-filtered (ax_f/ay_f/az_f) depending on the firmware mode flag.
+//
+// Capture chunks + completion (triggered by accel_capture_start()):
+//   data: {"ch":"x","s":0,"d":[f0,…,f99]}\n\n   ← 100 values per chunk
+//   data: {"done":1}\n\n                          ← render signal
+//   Values are g-units floats matching the live-mode selection.
+//
 // At most one client at a time; a new connection evicts the previous one.
 
 static http_conn_t *graph_sse_conn = NULL;
 
 static const http_response_t graph_sse_sentinel = { NULL, 0 };
 
+// fmt_g — format a g-unit float to 4 decimal places without float printf.
+// Avoids the --specs=nano.specs restriction on %f in snprintf.
+// dst must have at least 12 bytes (e.g. "-2.0000" + null).
+// Returns the number of characters written (not including null terminator).
+static int fmt_g(char *dst, int dsz, float v)
+{
+    // Round to nearest 0.0001 g, then extract sign and work with magnitude.
+    // Separating sign avoids the "whole==0, frac>0" case losing the '-'.
+    int32_t  iv  = (int32_t)(v * 10000.0f + (v >= 0.0f ? 0.5f : -0.5f));
+    int       neg = (iv < 0);
+    uint32_t  uv  = (uint32_t)(neg ? -iv : iv);
+    uint32_t  whl = uv / 10000u;
+    uint32_t  frc = uv % 10000u;
+    return snprintf(dst, (size_t)dsz,
+                    neg ? "-%lu.%04lu" : "%lu.%04lu",
+                    (unsigned long)whl, (unsigned long)frc);
+}
+
 // http_graph_push_chunk — public; called by accel.c's graph_send_next() chain.
-// ch_idx: 0=X, 1=Y, 2=Z.  start: sample offset.  data/count: slice to send.
-// Builds and writes the SSE frame.  No-op if no client is connected or if the
-// send buffer is too full (the 20 ms inter-chunk delay normally prevents that).
+// ch_idx: 0=X, 1=Y, 2=Z.  start: sample offset.  data/count: float g-values.
+// Values are formatted as X.XXXX (4 d.p.) without float printf.
 void http_graph_push_chunk(uint8_t ch_idx, uint16_t start,
-                           const short *data, uint16_t count)
+                           const float *data, uint16_t count)
 {
     if (!graph_sse_conn || !graph_sse_conn->pcb) return;
 
     static const char ch_names[] = "xyz";
     char ch = (ch_idx < 3u) ? ch_names[ch_idx] : '?';
 
-    // Build: data: {"ch":"x","s":NNN,"d":[v0,...,vN-1]}\n\n
-    // Max frame size: 6 + 22 + 100×8 + 5 = ~833 bytes → 900-byte buffer is safe.
+    // Max frame: prefix(30) + 100×"-2.0000,"(8) + suffix(5) = 835 B → 900 safe.
     static char frame[900];
     int pos = snprintf(frame, sizeof(frame),
                        "data: {\"ch\":\"%c\",\"s\":%u,\"d\":[", ch, (unsigned)start);
     for (uint16_t i = 0; i < count; i++) {
-        pos += snprintf(frame + pos, (int)sizeof(frame) - pos,
-                        "%s%d", i ? "," : "", (int)data[i]);
+        if (i) { frame[pos++] = ','; }
+        pos += fmt_g(frame + pos, (int)sizeof(frame) - pos, data[i]);
     }
     pos += snprintf(frame + pos, (int)sizeof(frame) - pos, "]}\n\n");
 
@@ -269,6 +292,55 @@ static const http_response_t *handle_graph_sse(const char *req, uint16_t len)
 {
     (void)req; (void)len;
     return &graph_sse_sentinel;   // http_recv() handles the SSE upgrade
+}
+
+// ── Live-stream burst accumulator ─────────────────────────────────────────────
+//
+// Called by accel_batch_process() for every sample (~100 Hz).
+// Values are g-units floats — raw (rx*SENS) or IIR-filtered (ax_f/ay_f/az_f)
+// depending on accel.c's graph_mode_raw flag.
+// Accumulates GRAPH_LIVE_BURST samples (10 × 10 ms = 100 ms), then flushes:
+//
+//   data: {"live":[x0,y0,z0, x1,y1,z1, … x9,y9,z9]}\n\n
+//
+// Values are formatted as 4-decimal fixed-point (via fmt_g, no float printf).
+// No-op (with accumulator reset) when no client is connected.
+
+#define GRAPH_LIVE_BURST 10u   // 10 samples × 10 ms = 100 ms burst interval
+
+static float   live_buf[3][GRAPH_LIVE_BURST];
+static uint8_t live_fill = 0;
+
+void http_graph_live_feed(float x, float y, float z)
+{
+    if (!graph_sse_conn || !graph_sse_conn->pcb) {
+        live_fill = 0;   // reset so next connect starts clean
+        return;
+    }
+
+    live_buf[0][live_fill] = x;
+    live_buf[1][live_fill] = y;
+    live_buf[2][live_fill] = z;
+    if (++live_fill < GRAPH_LIVE_BURST) return;
+    live_fill = 0;
+
+    // Max frame: "data: {"live":["(15) + 30×"-2.0000,"(8) + "]}\n\n"(5) ≈ 260 B
+    char frame[320];
+    int pos = snprintf(frame, sizeof(frame), "data: {\"live\":[");
+    for (uint8_t i = 0; i < GRAPH_LIVE_BURST; i++) {
+        if (i) { frame[pos++] = ','; }
+        pos += fmt_g(frame + pos, (int)sizeof(frame) - pos, live_buf[0][i]);
+        frame[pos++] = ',';
+        pos += fmt_g(frame + pos, (int)sizeof(frame) - pos, live_buf[1][i]);
+        frame[pos++] = ',';
+        pos += fmt_g(frame + pos, (int)sizeof(frame) - pos, live_buf[2][i]);
+    }
+    pos += snprintf(frame + pos, (int)sizeof(frame) - pos, "]}\n\n");
+
+    if (tcp_sndbuf(graph_sse_conn->pcb) >= (u16_t)pos) {
+        tcp_write(graph_sse_conn->pcb, frame, (u16_t)pos, TCP_WRITE_FLAG_COPY);
+        tcp_output(graph_sse_conn->pcb);
+    }
 }
 
 // http_accel_push — public; called by accel.c on each significant sample.
@@ -425,6 +497,23 @@ static const http_response_t *handle_term_sse(const char *req, uint16_t len)
     return &sse_sentinel;   // http_recv() handles connection promotion to SSE
 }
 
+/* --- POST /graph_mode — switch live/capture between raw and refined ------- */
+//
+// Body: "raw" → graph_mode_raw = true  (unfiltered g-values)
+//       "ref" → graph_mode_raw = false (IIR-filtered ax_f/ay_f/az_f)
+// Returns 204 No Content.  The browser Raw/Refined toggle sends this.
+
+static const http_response_t *handle_graph_mode(const char *req, uint16_t len)
+{
+    const char *body = strstr(req, "\r\n\r\n");
+    if (body) {
+        body += 4;
+        // "raw" → true; anything else (e.g. "ref", "refined") → false
+        accel_set_graph_raw(body[0] == 'r' && body[1] == 'a');
+    }
+    return &http_204;
+}
+
 /* --- POST /term_in --- */
 static const http_response_t *handle_term_in(const char *req, uint16_t len)
 {
@@ -452,6 +541,7 @@ static const http_route_t http_routes[] = {
     { "GET",  "/status_stream",  NULL,        handle_status_sse  },
     { "GET",  "/accel_stream",   NULL,        handle_accel_sse   },
     { "GET",  "/graph_stream",   NULL,        handle_graph_sse   },
+    { "POST", "/graph_mode",    NULL,        handle_graph_mode  },
     { "GET",  "/term_stream",    NULL,        handle_term_sse    },
     { "POST", "/term_in",        NULL,        handle_term_in     },
 };

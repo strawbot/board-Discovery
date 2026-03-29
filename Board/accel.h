@@ -48,4 +48,16 @@ void show_acc(void);
 // and print a human-readable summary.  Safe to call while accel is running.
 void show_regs(void);
 
+// accel_capture_start — trigger a 1000-sample snapshot to the /graph_stream
+// SSE client.  Samples are accumulated while accel is running and then shipped
+// as 100-sample chunks.  Live streaming continues in parallel.
+// No-op if accel is not running or a capture is already in progress.
+void accel_capture_start(void);
+
+// accel_set_graph_raw — select graph data source.
+// true  = raw unfiltered g-values (rx * SENS) before IIR filter.
+// false = IIR-filtered values (ax_f, ay_f, az_f) after filter.
+// Affects both live feed and 1000-sample capture.  Default: true.
+void accel_set_graph_raw(bool raw);
+
 #endif // ACCEL_H
