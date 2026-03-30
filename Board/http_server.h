@@ -58,4 +58,13 @@ void http_graph_push_chunk(uint8_t ch_idx, uint16_t start,
 // signalling the browser to render all three channels.  No-op if no client.
 void http_graph_done(void);
 
+// Push one muscle wire live sample to any connected /mw_stream SSE client.
+// vsupply_v  : supply voltage in volts (e.g. 12.5).
+// r_wire_ohm : wire resistance in ohms (0 when measurement not valid).
+// pwm_pct    : PWM duty cycle 0–100 (float so the graph auto-scales cleanly).
+// Sends {"live":[v,r,p]} — matches the /graph_stream live-burst format so
+// the browser sweep graph handles it without modification.
+// No-op if no client is connected.
+void http_mw_live_feed(float vsupply_v, float r_wire_ohm, float pwm_pct);
+
 #endif // HTTP_SERVER_H

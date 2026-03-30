@@ -36,6 +36,10 @@ NAMES(wordnames)
 	NAME("accwrite")		//  ( n a ) write n to accelerometer register a
 	NAME("xyz")		//  display current accelerometer values
 	NAME("show-ADC")		//  show all adc inputs
+	NAME("setpwm")		//  ( n ) set muscle wire PWM duty to n percent (0-70)
+	NAME("show-pwm")		//  show PWM duty, supply/node voltages, wire resistance and contraction
+	NAME("start-profile")		//  ( n ) apply n% PWM and begin 25.6 s resistance profile capture
+	NAME("dump-profile")		//  emit captured profile as CSV to CLI output
 	NAME("show-dac")		//  show DAC sine wave output: frequency, samples, timer registers
 	NAME("dacon")		//  start sine wave on PA4
 	NAME("dacoff")		//  stop sine wave on PA4
@@ -187,6 +191,10 @@ void accel_regs_read(void);
 void accel_reg_write(void);
 void xyz_read(void);
 void show_adc(void);
+void MW_CLI_SetPWM(void);
+void MW_CLI_ShowPWM(void);
+void MW_CLI_StartProfile(void);
+void MW_DumpProfile(void);
 void show_dac(void);
 void DAC_Sine_Start(void);
 void DAC_Sine_Stop(void);
@@ -338,6 +346,10 @@ BODIES(wordbodies)
 	BODY(accel_reg_write)
 	BODY(xyz_read)
 	BODY(show_adc)
+	BODY(MW_CLI_SetPWM)
+	BODY(MW_CLI_ShowPWM)
+	BODY(MW_CLI_StartProfile)
+	BODY(MW_DumpProfile)
 	BODY(show_dac)
 	BODY(DAC_Sine_Start)
 	BODY(DAC_Sine_Stop)

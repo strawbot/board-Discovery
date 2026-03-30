@@ -118,6 +118,7 @@ void help(void) {
     printif("decimals\n");
     printif("drop   ( n - ) throw away the top data stack item\n");
     printif("dump   ( a n - ) dump n 16-byte rows of memory starting at address a\n");
+    printif("dump-profile   emit captured profile as CSV to CLI output\n");
     printif("dup   ( n - n n ) make a copy of the top data stack item\n");
     printif("echooff   turn off key echo\n");
     printif("echoon   turn on key echo\n");
@@ -178,6 +179,7 @@ void help(void) {
     printif("resetcli   reset cli including removing all macros\n");
     printif("s!   ( h a - ) store next into memory using top as address (16 bit)\n");
     printif("s@   ( a - h ) return contents of memory using top stack item as the address (16 bit)\n");
+    printif("setpwm   ( n ) set muscle wire PWM duty to n percent (0-70)\n");
     printif("shift   ( n m - p ) shift n by m bit left for minus and right for positive\n");
     printif("show-ADC   show all adc inputs\n");
     printif("show-acc   show accelerometer type, orientation (pitch/roll) and tap count\n");
@@ -188,6 +190,7 @@ void help(void) {
     printif("show-http   show HTTP server state and active connections\n");
     printif("show-ip   show IP address, gateway, netmask and DHCP state\n");
     printif("show-net   show LwIP network statistics: RX/TX counts, errors\n");
+    printif("show-pwm   show PWM duty, supply/node voltages, wire resistance and contraction\n");
     printif("show-stats   show packet stats\n");
     printif("show-sys   show system info: clock frequencies and uptime\n");
     printif("show-telnet   show Telnet server state and active connections\n");
@@ -198,6 +201,7 @@ void help(void) {
     printif("sp!   ( ... - ) empty the data stack\n");
     printif("sqrt   ( f - f  ) calculate the square root of f\n");
     printif("start   create a reference point\n");
+    printif("start-profile   ( n ) apply n% PWM and begin 25.6 s resistance profile capture\n");
     printif("stop   stop recording events\n");
     printif("strlen   ( a - c ) return length of a string\n");
     printif("swap   ( n m - m n ) swap top two items on the data stack\n");

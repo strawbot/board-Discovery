@@ -34,7 +34,12 @@
 #include "accel.h"
 #include "button.h"
 
+void init_tea();
+void init_cli();
+void run();
+void network_init(void);
 void ADC_Driver_Init();   // once, after clocks are up
+void    MW_Init(void);
 void DAC_Sine_Init(uint32_t freq_hz);  // once, after clocks are up
 /* USER CODE END Includes */
 
@@ -112,23 +117,20 @@ int main(void)
   ADC_Driver_Init();
   DAC_Sine_Init(1000);   // 1 kHz default; change with DAC_Sine_SetFreq() via CLI
   /* USER CODE BEGIN 2 */
-void init_tea();
-void init_cli();
   init_tea();
   init_cli();
   usart6_transport_init();
   cdc_transport_init();
-  void network_init(void);
   later(network_init);
   later(accel_init);
   later(button_init);
-  /* USER CODE END 2 */
+  later(MW_Init);
+ /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    void run();
     run();
     /* USER CODE END WHILE */
 

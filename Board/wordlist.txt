@@ -66,6 +66,7 @@ decimal   interpret all subsequent numbers as decimal
 decimals  
 drop   ( n - ) throw away the top data stack item
 dump   ( a n - ) dump n 16-byte rows of memory starting at address a
+dump-profile   emit captured profile as CSV to CLI output
 dup   ( n - n n ) make a copy of the top data stack item
 echooff   turn off key echo
 echoon   turn on key echo
@@ -126,6 +127,7 @@ repeat  [i]  go back to the begin part
 resetcli   reset cli including removing all macros
 s!   ( h a - ) store next into memory using top as address (16 bit)
 s@   ( a - h ) return contents of memory using top stack item as the address (16 bit)
+setpwm   ( n ) set muscle wire PWM duty to n percent (0-70)
 shift   ( n m - p ) shift n by m bit left for minus and right for positive
 show-ADC   show all adc inputs
 show-acc   show accelerometer type, orientation (pitch/roll) and tap count
@@ -136,6 +138,7 @@ show-eth   show Ethernet link status, speed, duplex and PHY info
 show-http   show HTTP server state and active connections
 show-ip   show IP address, gateway, netmask and DHCP state
 show-net   show LwIP network statistics: RX/TX counts, errors
+show-pwm   show PWM duty, supply/node voltages, wire resistance and contraction
 show-stats   show packet stats
 show-sys   show system info: clock frequencies and uptime
 show-telnet   show Telnet server state and active connections
@@ -146,6 +149,7 @@ sin   ( f -  f  ) calculate the sine of f
 sp!   ( ... - ) empty the data stack
 sqrt   ( f - f  ) calculate the square root of f
 start   create a reference point
+start-profile   ( n ) apply n% PWM and begin 25.6 s resistance profile capture
 stop   stop recording events
 strlen   ( a - c ) return length of a string
 swap   ( n m - m n ) swap top two items on the data stack

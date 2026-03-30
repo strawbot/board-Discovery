@@ -230,6 +230,27 @@ static http_conn_t *graph_sse_conn = NULL;
 
 static const http_response_t graph_sse_sentinel = { NULL, 0 };
 
+/* --- GET /mw_stream — SSE push for muscle wire live data ----------------- */
+//
+// Sends one {"live":[v,r,p]} frame per call from MW_HttpFeed() (~5 Hz).
+//   v = V_supply in volts (float, 4 d.p.)
+//   r = R_wire in ohms    (float, 4 d.p.)
+//   p = PWM duty cycle %  (float, 4 d.p.)
+// Uses the same live-burst frame format as /graph_stream so the browser
+// graph ring-buffer and sweep draw code require no changes.
+//
+// At most one client at a time; a new connection evicts the previous one.
+
+static http_conn_t *mw_sse_conn = NULL;
+
+static const http_response_t mw_sse_sentinel = { NULL, 0 };
+
+static const http_response_t *handle_mw_sse(const char *req, uint16_t len)
+{
+    (void)req; (void)len;
+    return &mw_sse_sentinel;   // http_recv() handles the SSE upgrade
+}
+
 // fmt_g — format a g-unit float to 4 decimal places without float printf.
 // Avoids the --specs=nano.specs restriction on %f in snprintf.
 // dst must have at least 12 bytes (e.g. "-2.0000" + null).
@@ -246,6 +267,30 @@ static int fmt_g(char *dst, int dsz, float v)
     return snprintf(dst, (size_t)dsz,
                     neg ? "-%lu.%04lu" : "%lu.%04lu",
                     (unsigned long)whl, (unsigned long)frc);
+}
+
+// http_mw_live_feed — public; called by muscle_wire.c MW_HttpFeed().
+// vsupply_v  : supply voltage in volts.
+// r_wire_ohm : wire resistance in ohms (0 when ON phase / not valid).
+// pwm_pct    : current PWM duty cycle as a percentage (0–100).
+void http_mw_live_feed(float vsupply_v, float r_wire_ohm, float pwm_pct)
+{
+    if (!mw_sse_conn || !mw_sse_conn->pcb) return;
+
+    // Max frame: "data: {"live":["(15) + 3×"-99.9999,"(10) + "]}\n\n"(5) ≈ 60 B
+    char frame[80];
+    int pos = snprintf(frame, sizeof(frame), "data: {\"live\":[");
+    pos += fmt_g(frame + pos, (int)sizeof(frame) - pos, vsupply_v);
+    frame[pos++] = ',';
+    pos += fmt_g(frame + pos, (int)sizeof(frame) - pos, r_wire_ohm);
+    frame[pos++] = ',';
+    pos += fmt_g(frame + pos, (int)sizeof(frame) - pos, pwm_pct);
+    pos += snprintf(frame + pos, (int)sizeof(frame) - pos, "]}\n\n");
+
+    if (tcp_sndbuf(mw_sse_conn->pcb) >= (u16_t)pos) {
+        tcp_write(mw_sse_conn->pcb, frame, (u16_t)pos, TCP_WRITE_FLAG_COPY);
+        tcp_output(mw_sse_conn->pcb);
+    }
 }
 
 // http_graph_push_chunk — public; called by accel.c's graph_send_next() chain.
@@ -542,6 +587,7 @@ static const http_route_t http_routes[] = {
     { "GET",  "/accel_stream",   NULL,        handle_accel_sse   },
     { "GET",  "/graph_stream",   NULL,        handle_graph_sse   },
     { "POST", "/graph_mode",    NULL,        handle_graph_mode  },
+    { "GET",  "/mw_stream",      NULL,        handle_mw_sse      },
     { "GET",  "/term_stream",    NULL,        handle_term_sse    },
     { "POST", "/term_in",        NULL,        handle_term_in     },
 };
@@ -556,6 +602,7 @@ static void conn_close(http_conn_t *c)
     if (c == status_sse_conn) status_sse_conn = NULL;   // un-register status SSE
     if (c == accel_sse_conn)  accel_sse_conn  = NULL;   // un-register accel SSE
     if (c == graph_sse_conn)  graph_sse_conn  = NULL;   // un-register graph SSE
+    if (c == mw_sse_conn)     mw_sse_conn     = NULL;   // un-register MW SSE
     struct tcp_pcb *pcb = c->pcb;
     tcp_arg(pcb,  NULL);
     tcp_recv(pcb, NULL);
@@ -746,6 +793,26 @@ static err_t http_recv(void *arg, struct tcp_pcb *pcb,
                 tcp_output(c->pcb);
                 // Data arrives in chunks when dump_table() fires after a capture.
 
+            } else if (resp == &mw_sse_sentinel) {
+                // Promote connection to persistent muscle wire SSE stream.
+                // Evict any existing subscriber first.
+                if (mw_sse_conn && mw_sse_conn->pcb)
+                    conn_close(mw_sse_conn);
+                mw_sse_conn = c;
+                c->state = HTTP_SSE;
+                tcp_poll(c->pcb, NULL, 0);      // disable idle timeout
+
+                static const char mw_sse_hdr[] =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/event-stream\r\n"
+                    "Cache-Control: no-cache\r\n"
+                    "Connection: keep-alive\r\n"
+                    "\r\n";
+                tcp_write(c->pcb, mw_sse_hdr, sizeof(mw_sse_hdr) - 1,
+                          TCP_WRITE_FLAG_COPY);
+                tcp_output(c->pcb);
+                // MW_HttpFeed() pushes ~5 Hz {"live":[v,r,p]} frames.
+
             } else {
                 c->tx_ptr       = resp->data;
                 c->tx_remaining = resp->length;
@@ -796,6 +863,7 @@ static void http_err(void *arg, err_t err) {
         if (c == status_sse_conn) status_sse_conn = NULL;
         if (c == accel_sse_conn)  accel_sse_conn  = NULL;
         if (c == graph_sse_conn)  graph_sse_conn  = NULL;
+        if (c == mw_sse_conn)     mw_sse_conn     = NULL;
         c->pcb = NULL;
         conn_free(c);
     }
@@ -870,6 +938,7 @@ void http_server_stop(void) {
     status_sse_conn = NULL;
     accel_sse_conn  = NULL;
     graph_sse_conn  = NULL;
+    mw_sse_conn     = NULL;
     // Close all active connections.
     for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++) {
         if (conns[i].state != HTTP_IDLE) {

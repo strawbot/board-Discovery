@@ -32,6 +32,14 @@ End
 
 Words // ADC
 	show-ADC		show_adc		// show all adc inputs
+	
+End
+
+Words // PWM / muscle wire
+	setpwm			MW_CLI_SetPWM	    // ( n ) set muscle wire PWM duty to n percent (0-70)
+	show-pwm		MW_CLI_ShowPWM	    // show PWM duty, supply/node voltages, wire resistance and contraction
+	start-profile	MW_CLI_StartProfile // ( n ) apply n% PWM and begin 25.6 s resistance profile capture
+	dump-profile	MW_DumpProfile	    // emit captured profile as CSV to CLI output
 End
 
 Words // DAC
