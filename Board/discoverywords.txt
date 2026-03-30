@@ -55,7 +55,8 @@ End
 
 Words // system
 	show-sys		show_sys		// show system info: clock frequencies and uptime
-	show-timer		show_timer		// show delta timer state and UTC tick counter
+	show-time		show_timer		// show delta timer state and UTC tick counter
+	show-timers		show_timers		// dump TIM1-TIM14 and RTC: clock gate, CEN, direction, PSC, ARR, CNT, active CC channels
 	reboot			do_reboot		// reboot the device via NVIC system reset
 	show-cli		show_cli		// display cli status
 	pins			gpio_dump_all	// show all pins and states

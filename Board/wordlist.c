@@ -46,7 +46,8 @@ NAMES(wordnames)
 	NAME("dacset")		//  ( f ) set sine wave to frequency f in hz from 1 to 1,000,000
 	NAME("show-dma")		//  show DMA controller usage: active streams, channels, state, error flags
 	NAME("show-sys")		//  show system info: clock frequencies and uptime
-	NAME("show-timer")		//  show delta timer state and UTC tick counter
+	NAME("show-time")		//  show delta timer state and UTC tick counter
+	NAME("show-timers")		//  dump TIM1-TIM14 and RTC: clock gate, CEN, direction, PSC, ARR, CNT, active CC channels
 	NAME("reboot")		//  reboot the device via NVIC system reset
 	NAME("show-cli")		//  display cli status
 	NAME("pins")		//  show all pins and states
@@ -202,6 +203,7 @@ void cli_DAC_Sine_SetFreq(void);
 void show_dma(void);
 void show_sys(void);
 void show_timer(void);
+void show_timers(void);
 void do_reboot(void);
 void show_cli(void);
 void gpio_dump_all(void);
@@ -357,6 +359,7 @@ BODIES(wordbodies)
 	BODY(show_dma)
 	BODY(show_sys)
 	BODY(show_timer)
+	BODY(show_timers)
 	BODY(do_reboot)
 	BODY(show_cli)
 	BODY(gpio_dump_all)

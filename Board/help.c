@@ -194,7 +194,8 @@ void help(void) {
     printif("show-stats   show packet stats\n");
     printif("show-sys   show system info: clock frequencies and uptime\n");
     printif("show-telnet   show Telnet server state and active connections\n");
-    printif("show-timer   show delta timer state and UTC tick counter\n");
+    printif("show-time   show delta timer state and UTC tick counter\n");
+    printif("show-timers   dump TIM1-TIM14 and RTC: clock gate, CEN, direction, PSC, ARR, CNT, active CC channels\n");
     printif("show-usb   show USB connection state and CDC line status\n");
     printif("sign   ( m n - n ) prepend sign to number sequence if m is negative\n");
     printif("sin   ( f -  f  ) calculate the sine of f\n");

@@ -142,7 +142,8 @@ show-pwm   show PWM duty, supply/node voltages, wire resistance and contraction
 show-stats   show packet stats
 show-sys   show system info: clock frequencies and uptime
 show-telnet   show Telnet server state and active connections
-show-timer   show delta timer state and UTC tick counter
+show-time   show delta timer state and UTC tick counter
+show-timers   dump TIM1-TIM14 and RTC: clock gate, CEN, direction, PSC, ARR, CNT, active CC channels
 show-usb   show USB connection state and CDC line status
 sign   ( m n - n ) prepend sign to number sequence if m is negative
 sin   ( f -  f  ) calculate the sine of f

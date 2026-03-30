@@ -20,6 +20,7 @@ void show_acc(void);        // Chip type, WHO_AM_I, pitch, roll, sample and tap 
 
 // system
 void show_sys(void);        // Clock frequencies and uptime
+void show_timers(void);     // STM32F407 hardware timer survey: TIM1-TIM14 + RTC (clock gate, CEN, PSC/ARR/CNT, active CC channels)
 void do_reboot(void);       // NVIC system reset
 
 #endif // DISCOVERY_CLI_H
