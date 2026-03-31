@@ -79,6 +79,33 @@
 #define MW_PROFILE_PERIOD_MS    50u         // one sample every N ms
 // Total window = 512 × 50 ms = 25.6 seconds
 
+// ── ADC sample timing ─────────────────────────────────────────────────────────
+// TIM3 CC2 interrupt fires at every ON→OFF edge (CNT == CCR2).
+// The ISR immediately arms CC4 as a one-shot at CCR2 + MW_ADC_SETTLE_TICKS.
+// The CC4 interrupt latches both ADC channels into adc_latch at that exact point,
+// giving a deterministic, ringing-free sample every PWM cycle.
+// Wire MW_TIM3_IRQHandler() into TIM3_IRQHandler in stm32f4xx_it.c.
+#define MW_ADC_SETTLE_TICKS 100u        // µs after PWM falling edge before ADC sample
+
+// ── Self-calibration ──────────────────────────────────────────────────────────
+// cal-wire procedure: hold 0% until stable (R_max), then max% until stable (R_min).
+// MW_CalTick() self-reschedules at 200 ms; started by MW_CLI_Calibrate().
+#define CAL_WINDOW          8u          // samples in stability window (8 × 200 ms = 1.6 s)
+#define CAL_STABLE_BAND     0.30f       // Ω — max window spread to declare stability
+#define CAL_RMAX_SETTLE_MS  5000u       // ms at 0% PWM before R_max sampling begins
+#define CAL_RMIN_HEAT_MS    3000u       // ms at max PWM before R_min sampling begins
+#define CAL_TIMEOUT_MS      15000u      // ms before aborting a sampling phase
+
+typedef enum {
+    MW_CAL_IDLE        = 0,
+    MW_CAL_RMAX_SETTLE,     // waiting for wire to cool at 0% PWM
+    MW_CAL_RMAX_SAMPLE,     // collecting stable R_max window
+    MW_CAL_RMIN_HEAT,       // holding max PWM, waiting for wire to contract
+    MW_CAL_RMIN_SAMPLE,     // collecting stable R_min window
+    MW_CAL_DONE,
+    MW_CAL_TIMEOUT,
+} MW_CalState_t;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 typedef struct {
     uint32_t time_ms;       // ms elapsed since profile start
@@ -127,9 +154,21 @@ void               MW_DumpProfile(void);    // CSV to CLI output
 // from a different translation unit; MW_Init() already does this.
 void    MW_HttpFeed(void);
 
+// Self-calibration — driven by MW_CalTick() at 200 ms intervals.
+// After cal-wire completes, MW_GetContraction() uses measured limits instead
+// of the compile-time defaults.
+MW_CalState_t  MW_GetCalState(void);
+bool           MW_IsCalValid(void);
+float          MW_GetCalRmax(void);
+float          MW_GetCalRmin(void);
+void           MW_CalTick(void);            // self-rescheduling; started by MW_CLI_Calibrate
+void           MW_TIM3_IRQHandler(void);    // call from TIM3_IRQHandler in stm32f4xx_it.c
+
 // CLI handlers — bind via discoverywords.txt
 void    MW_CLI_ShowPWM(void);               // show-pwm
-void    MW_CLI_SetPWM(void);                // setpwm       ( n )
-void    MW_CLI_StartProfile(void);          // start-profile ( n )
+void    MW_CLI_SetPWM(void);                // setpwm        ( n )
+void    MW_CLI_StartProfile(void);          // start-profile  ( n )
+void    MW_CLI_Calibrate(void);             // cal-wire
+void    MW_CLI_ShowCal(void);               // show-cal
 
 #endif // MUSCLE_WIRE_H_

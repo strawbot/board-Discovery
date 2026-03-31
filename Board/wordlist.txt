@@ -54,6 +54,7 @@ bin   switch to binary numbers
 c!   ( c a - ) store next into memory using top as address (8 bit)
 c,   ( c - ) allocate and 1 byte and put value in it
 c@   ( a - c ) return contents of memory using top stack item as the address (8 bit)
+cal-wire   run two-point self-calibration: R_max at 0% then R_min at 70%
 cbrt   ( f - f  ) calculate the cube root of f
 cmove   ( s d n - ) move n bytes from s to d
 constant   ( n - ) <string> give n a name
@@ -131,6 +132,7 @@ setpwm   ( n ) set muscle wire PWM duty to n percent (0-70)
 shift   ( n m - p ) shift n by m bit left for minus and right for positive
 show-ADC   show all adc inputs
 show-acc   show accelerometer type, orientation (pitch/roll) and tap count
+show-cal   show calibration state, R_max, R_min and measured travel span
 show-cli   display cli status
 show-dac   show DAC sine wave output: frequency, samples, timer registers
 show-dma   show DMA controller usage: active streams, channels, state, error flags

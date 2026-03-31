@@ -106,6 +106,7 @@ void help(void) {
     printif("c!   ( c a - ) store next into memory using top as address (8 bit)\n");
     printif("c,   ( c - ) allocate and 1 byte and put value in it\n");
     printif("c@   ( a - c ) return contents of memory using top stack item as the address (8 bit)\n");
+    printif("cal-wire   run two-point self-calibration: R_max at 0% then R_min at 70%\n");
     printif("cbrt   ( f - f  ) calculate the cube root of f\n");
     printif("cmove   ( s d n - ) move n bytes from s to d\n");
     printif("constant   ( n - ) <string> give n a name\n");
@@ -183,6 +184,7 @@ void help(void) {
     printif("shift   ( n m - p ) shift n by m bit left for minus and right for positive\n");
     printif("show-ADC   show all adc inputs\n");
     printif("show-acc   show accelerometer type, orientation (pitch/roll) and tap count\n");
+    printif("show-cal   show calibration state, R_max, R_min and measured travel span\n");
     printif("show-cli   display cli status\n");
     printif("show-dac   show DAC sine wave output: frequency, samples, timer registers\n");
     printif("show-dma   show DMA controller usage: active streams, channels, state, error flags\n");

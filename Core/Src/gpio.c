@@ -39,7 +39,7 @@
         * EVENT_OUT
         * EXTI
      PC3   ------> I2S2_SD
-     PA4   ------> I2S3_WS
+     PA4   ------> COMP_DAC1_group
      PB10   ------> I2S2_CK
      PB6   ------> I2C1_SCL
      PB9   ------> I2C1_SDA
@@ -94,13 +94,10 @@ void MX_GPIO_Init(void)
   LL_GPIO_Init(PDM_OUT_GPIO_Port, &GPIO_InitStruct);
 
   /**/
-  GPIO_InitStruct.Pin = I2S3_WS_Pin;
-  GPIO_InitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-  GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
+  GPIO_InitStruct.Pin = LL_GPIO_PIN_4;
+  GPIO_InitStruct.Mode = LL_GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
-  GPIO_InitStruct.Alternate = LL_GPIO_AF_6;
-  LL_GPIO_Init(I2S3_WS_GPIO_Port, &GPIO_InitStruct);
+  LL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /**/
   GPIO_InitStruct.Pin = BOOT1_Pin;

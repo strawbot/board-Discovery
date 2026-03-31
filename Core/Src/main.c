@@ -112,10 +112,8 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   MX_SPI1_Init();
   MX_ADC1_Init();
+  MX_TIM3_Init();
   MX_ADC2_Init();
-  MX_ADC3_Init();
-  ADC_Driver_Init();
-  DAC_Sine_Init(1000);   // 1 kHz default; change with DAC_Sine_SetFreq() via CLI
   /* USER CODE BEGIN 2 */
   init_tea();
   init_cli();
@@ -125,7 +123,7 @@ int main(void)
   later(accel_init);
   later(button_init);
   later(MW_Init);
- /* USER CODE END 2 */
+  /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
