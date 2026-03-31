@@ -39,7 +39,7 @@ void init_cli();
 void run();
 void network_init(void);
 void ADC_Driver_Init();   // once, after clocks are up
-void    MW_Init(void);
+void MW_Init(void);
 void DAC_Sine_Init(uint32_t freq_hz);  // once, after clocks are up
 /* USER CODE END Includes */
 
@@ -119,6 +119,8 @@ int main(void)
   init_cli();
   usart6_transport_init();
   cdc_transport_init();
+  ADC_Driver_Init();
+  DAC_Sine_Init(1000);   // 1 kHz default; change with DAC_Sine_SetFreq() via CLI
   later(network_init);
   later(accel_init);
   later(button_init);

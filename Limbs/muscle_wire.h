@@ -79,6 +79,23 @@
 #define MW_PROFILE_PERIOD_MS    50u         // one sample every N ms
 // Total window = 512 × 50 ms = 25.6 seconds
 
+// ── ADC filtering ─────────────────────────────────────────────────────────────
+// Two-stage filter applied by MW_SampleR at 100 ms intervals (10 Hz):
+//
+//   Stage 1 — DMA oversampling (in adc_driver):
+//     ADC_OVERSAMPLE = 20 sweeps × ~13 µs = 261 µs box filter.
+//     Cancels the 4 kHz supply noise whose period is 250 µs.
+//
+//   Stage 2 — IIR single-pole low-pass (here, on converted float values):
+//     y[n] = α·x[n] + (1−α)·y[n−1]
+//     At 10 Hz: time constant τ ≈ −1 / (f_s · ln(1−α))
+//     MW_IIR_ALPHA = 0.20 → τ ≈ 450 ms  (tracks wire thermal changes,
+//     rejects any residual high-frequency noise that aliased through Stage 1)
+//
+// Increase MW_IIR_ALPHA (toward 1.0) for faster but noisier response.
+// Decrease it for heavier smoothing.
+#define MW_IIR_ALPHA            0.20f
+
 // ── ADC sample timing ─────────────────────────────────────────────────────────
 // TIM3 CC2 interrupt fires at every ON→OFF edge (CNT == CCR2).
 // The ISR immediately arms CC4 as a one-shot at CCR2 + MW_ADC_SETTLE_TICKS.
@@ -92,9 +109,14 @@
 // MW_CalTick() self-reschedules at 200 ms; started by MW_CLI_Calibrate().
 #define CAL_WINDOW          8u          // samples in stability window (8 × 200 ms = 1.6 s)
 #define CAL_STABLE_BAND     0.30f       // Ω — max window spread to declare stability
+// IIR applied to R_wire inside MW_CalTick before pushing to the stability window.
+// Filters R directly rather than vsup/vnode separately, so correlated noise cancels.
+// Holds its last value when a raw reading is momentarily invalid (keeps window rotating).
+// α = 0.15 → τ ≈ 1.2 s at the 200 ms CalTick rate.  Raise for faster but noisier tracking.
+#define CAL_R_ALPHA         0.15f
 #define CAL_RMAX_SETTLE_MS  5000u       // ms at 0% PWM before R_max sampling begins
 #define CAL_RMIN_HEAT_MS    3000u       // ms at max PWM before R_min sampling begins
-#define CAL_TIMEOUT_MS      15000u      // ms before aborting a sampling phase
+#define CAL_TIMEOUT_MS      25000u      // ms before aborting a sampling phase
 
 typedef enum {
     MW_CAL_IDLE        = 0,
@@ -162,6 +184,7 @@ bool           MW_IsCalValid(void);
 float          MW_GetCalRmax(void);
 float          MW_GetCalRmin(void);
 void           MW_CalTick(void);            // self-rescheduling; started by MW_CLI_Calibrate
+void           MW_SampleR(void);            // 100 ms self-rescheduling: convert raw latch → adc_latch, re-arm CC4
 void           MW_TIM3_IRQHandler(void);    // call from TIM3_IRQHandler in stm32f4xx_it.c
 
 // CLI handlers — bind via discoverywords.txt

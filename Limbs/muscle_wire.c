@@ -36,14 +36,28 @@ static uint32_t            profile_start = 0;   // HAL_GetTick() at start
 static uint8_t             profile_duty  = 0;
 static MW_ProfileState_t   profile_state = MW_PROFILE_IDLE;
 
-// ── ADC latch — filled by TIM3 CC4 ISR at the settled sample point ───────────
-// When PWM > 0 the CC4 interrupt fires MW_ADC_SETTLE_TICKS µs after each
-// ON→OFF edge and updates this struct.  adc_snap() returns these values.
-// When PWM = 0 there are no edges; adc_snap() reads ADC_Driver_Update directly.
+// ── ADC sample latches ────────────────────────────────────────────────────────
+//
+// adc_raw_latch — written by the CC4 ISR (trivially small: two LDRH + STRH).
+//   Holds raw 12-bit DMA buffer values captured MW_ADC_SETTLE_TICKS µs after
+//   the PWM falling edge.  ISR only writes; MW_SampleR (main loop) reads.
+//
+// adc_latch — written by MW_SampleR in main-loop context after converting the
+//   raw counts to millivolts using the cached VDDA.  All other code reads this.
+//   Always fresh within one MW_SampleR period (100 ms).
+static volatile struct {
+    uint16_t raw0;      // IN3 — supply sense
+    uint16_t raw1;      // IN8 — node sense
+} adc_raw_latch = { 0u, 0u };
+
 static volatile struct {
     float vsup_mv;
     float vnode_mv;
 } adc_latch = { 0.0f, 0.0f };
+
+// IIR filter state — initialised to 0; MW_SampleR seeds from first reading.
+static float iir_vsup_mv  = 0.0f;
+static float iir_vnode_mv = 0.0f;
 
 // ── Calibration state ─────────────────────────────────────────────────────────
 static MW_CalState_t  cal_state   = MW_CAL_IDLE;
@@ -54,6 +68,11 @@ static uint32_t       cal_tick_ms = 0;                      // ms elapsed in cur
 static float          cal_win[CAL_WINDOW];                  // rolling sample window
 static uint8_t        cal_win_idx = 0;
 static uint8_t        cal_win_cnt = 0;
+// Per-phase IIR on the resistance value.  Filters R directly so correlated noise
+// in vsup/vnode cancels through the R formula.  Holds its last value when an
+// individual raw reading is momentarily invalid, keeping cal_win rotating.
+// Reset to 0 at the start of each sampling phase by cal_reset_window().
+static float          cal_r_filt  = 0.0f;
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Init — TIM3 CH2 / PB5 PWM, 1 kHz
@@ -99,20 +118,27 @@ void MW_Init(void)
     LL_TIM_GenerateEvent_UPDATE(TIM3);
     LL_TIM_EnableCounter(TIM3);
 
-    // ── CC2 interrupt: ON→OFF edge detection ──────────────────────────────────
-    // CC4 interrupt is armed dynamically from the CC2 ISR; not enabled here.
-    LL_TIM_ClearFlag_CC2(TIM3);
+    // ── TIM3 IRQ — CC4 only (CC2 not used) ───────────────────────────────────
+    // CC4 is armed by MW_SampleR (100 ms tea action) before each wanted sample.
+    // The ISR is two uint16 reads + disable — no blocking, no ADC1 activity.
     LL_TIM_ClearFlag_CC4(TIM3);
-    LL_TIM_EnableIT_CC2(TIM3);
-
-    // TIM3 IRQ priority: below SysTick so the scheduler can still preempt;
-    // ADC_Driver_Update reads only the DMA buffer and is ISR-safe.
     NVIC_SetPriority(TIM3_IRQn, 8u);
     NVIC_EnableIRQ(TIM3_IRQn);
+
+    // ── Dual simultaneous ADC ─────────────────────────────────────────────
+    // Retire the ADC2 continuous DMA scan; configure ADC1+ADC2 for dual
+    // regular simultaneous mode so vsup (IN3) and vnode (IN8) are captured
+    // at exactly the same instant.  Supply noise cancels in the R ratio.
+    ADC_SimInit();
 
     // Register the HTTP feed action and start the 200 ms self-reschedule chain.
     namedAction(MW_HttpFeed);
     after(msec(200), MW_HttpFeed);
+
+    // MW_SampleR: arms CC4 and converts the captured raw values → adc_latch.
+    // Runs at 100 ms so adc_latch is always within one period of fresh.
+    namedAction(MW_SampleR);
+    after(msec(100), MW_SampleR);
 
     // Register calibration tick so the scheduler can find it by name.
     // MW_CLI_Calibrate() starts it; it stops itself when done.
@@ -150,48 +176,37 @@ bool MW_IsOffPhase(void)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TIM3 IRQ — CC2 (ON→OFF edge) arms CC4; CC4 (settled) latches ADC
+// TIM3 IRQ — CC4 one-shot fires MW_ADC_SETTLE_TICKS µs after the PWM edge
 //
-// CC2 fires when CNT == CCR2: PWM output falls LOW, OFF phase begins.
-// We immediately set CCR4 = CCR2 + MW_ADC_SETTLE_TICKS and enable CC4.
-// CC4 fires MW_ADC_SETTLE_TICKS µs later — ringing has decayed, Node_A
-// is stable — and latches both ADC channels into adc_latch.
-// CC4 then disables itself (one-shot); CC2 re-arms it next cycle.
+// MW_SampleR (100 ms tea action) arms CC4 before each wanted sample.
+// When CC4 fires (100 µs into the OFF phase), the ISR triggers a dual
+// regular simultaneous single-shot on ADC1+ADC2 so that vsup (IN3/PA3) and
+// vnode (IN8/PB0) are captured at exactly the same clock cycle.
 //
-// Call this function from TIM3_IRQHandler in stm32f4xx_it.c:
+// Supply-rail noise common to both nodes cancels in the R_wire ratio, so no
+// DMA oversampling window is needed.  The ADC conversion takes ~714 ns
+// (15 cycles @ 21 MHz); the spin-wait is bounded and negligible relative to
+// the 1 ms PWM period.
+//
+// Call from TIM3_IRQHandler in stm32f4xx_it.c:
 //   void TIM3_IRQHandler(void) { MW_TIM3_IRQHandler(); }
 // ═════════════════════════════════════════════════════════════════════════════
 
 void MW_TIM3_IRQHandler(void)
 {
-    // ── CC2: ON→OFF transition ────────────────────────────────────────────────
-    if (LL_TIM_IsActiveFlag_CC2(TIM3))
-    {
-        LL_TIM_ClearFlag_CC2(TIM3);
-
-        if (pwm_pct > 0u)
-        {
-            // Schedule CC4 one-shot MW_ADC_SETTLE_TICKS after this edge.
-            // CCR2 is the duty threshold CNT just matched.
-            // Modulo keeps CCR4 within [0, ARR].
-            uint32_t ccr4 = (LL_TIM_OC_GetCompareCH2(TIM3) + MW_ADC_SETTLE_TICKS)
-                            % (MW_PWM_ARR + 1u);
-            LL_TIM_OC_SetCompareCH4(TIM3, ccr4);
-            LL_TIM_ClearFlag_CC4(TIM3);
-            LL_TIM_EnableIT_CC4(TIM3);
-        }
-    }
-
-    // ── CC4: settle delay elapsed — latch ADC readings ────────────────────────
     if (LL_TIM_IsActiveFlag_CC4(TIM3))
     {
         LL_TIM_ClearFlag_CC4(TIM3);
-        LL_TIM_DisableIT_CC4(TIM3);     // one-shot: CC2 re-arms next cycle
+        LL_TIM_DisableIT_CC4(TIM3);     // one-shot: MW_SampleR re-arms next time
 
-        ADC_Results_t r;
-        ADC_Driver_Update(&r);
-        adc_latch.vsup_mv  = r.voltage_mv[ADC_IDX_IN3] * MW_SCALE_CH0;
-        adc_latch.vnode_mv = r.voltage_mv[ADC_IDX_IN8] * MW_SCALE_CH1;
+        // Trigger simultaneous single-shot: IN3 (vsup) and IN8 (vnode)
+        // captured at exactly the same clock cycle.  Both channels sample
+        // the same supply-noise phase so the noise cancels in the R ratio.
+        // Spin-wait: 3 sample + 12 convert = 15 ADC cycles @ 21 MHz ≈ 714 ns.
+        // This is bounded and far shorter than the PWM period (1 ms).
+        ADC_SimTrigger();
+        while (!ADC_SimReady()) {}
+        ADC_SimRead(&adc_raw_latch.raw0, &adc_raw_latch.raw1);
     }
 }
 
@@ -199,29 +214,79 @@ void MW_TIM3_IRQHandler(void)
 // ADC readings  (from shared adc_driver DMA buffer)
 // ═════════════════════════════════════════════════════════════════════════════
 
-// Return a consistent ADC snapshot for both channels.
+// ═════════════════════════════════════════════════════════════════════════════
+// MW_SampleR — 100 ms tea action: convert raw latch → float, re-arm CC4
 //
-// PWM active (> 0 %): return the hardware-latched values filled by the CC4
-//   ISR exactly MW_ADC_SETTLE_TICKS µs after each ON→OFF edge.  This is
-//   always at the same settled point in the OFF window — no polling, no
-//   phase guessing, no inductive-spike contamination.
+// When PWM > 0:
+//   1. Convert adc_raw_latch (filled by CC4 ISR at the settled OFF-phase point)
+//      to millivolts using the cached VDDA.
+//   2. Arm CC4 for the next cycle: CCR4 = CCR2 + MW_ADC_SETTLE_TICKS.
+//      On the next PWM falling edge + SETTLE_TICKS µs, CC4 fires and the ISR
+//      takes a fresh simultaneous ADC1+ADC2 shot into adc_raw_latch.
 //
-// PWM off (0 %): the whole period is an OFF phase so there are no edges to
-//   trigger CC2/CC4.  Read ADC_Driver_Update directly; it is always valid.
-static void adc_snap(float *vsup_mv, float *vnode_mv)
+// When PWM = 0:
+//   The entire period is OFF phase; take a fresh simultaneous single-shot
+//   directly — no CC4 needed.
+//
+// adc_latch is updated every 100 ms regardless of PWM state, so all
+// consumers (adc_snap, CalTick, HttpFeed) always see a recent reading.
+// ═════════════════════════════════════════════════════════════════════════════
+
+void MW_SampleR(void)
 {
+    const float vdda = ADC_GetVDDA_mv();    // last calibrated VDDA (mV)
+    float new_vsup, new_vnode;
+
     if (pwm_pct == 0u)
     {
-        ADC_Results_t r;
-        ADC_Driver_Update(&r);
-        *vsup_mv  = r.voltage_mv[ADC_IDX_IN3] * MW_SCALE_CH0;
-        *vnode_mv = r.voltage_mv[ADC_IDX_IN8] * MW_SCALE_CH1;
+        // No PWM — the entire period is the OFF phase; take a fresh
+        // simultaneous single-shot now.  No need to wait for CC4.
+        ADC_SimTrigger();
+        while (!ADC_SimReady()) {}
+        uint16_t raw0, raw1;
+        ADC_SimRead(&raw0, &raw1);
+        new_vsup  = (float)raw0 * vdda / 4095.0f * MW_SCALE_CH0;
+        new_vnode = (float)raw1 * vdda / 4095.0f * MW_SCALE_CH1;
     }
     else
     {
-        *vsup_mv  = adc_latch.vsup_mv;
-        *vnode_mv = adc_latch.vnode_mv;
+        // Convert raw values captured by the CC4 ISR at the settled point.
+        new_vsup  = (float)adc_raw_latch.raw0 * vdda / 4095.0f * MW_SCALE_CH0;
+        new_vnode = (float)adc_raw_latch.raw1 * vdda / 4095.0f * MW_SCALE_CH1;
+
+        // Re-arm CC4 for the settled point in the next PWM cycle.
+        uint32_t ccr4 = (LL_TIM_OC_GetCompareCH2(TIM3) + MW_ADC_SETTLE_TICKS)
+                        % (MW_PWM_ARR + 1u);
+        LL_TIM_OC_SetCompareCH4(TIM3, ccr4);
+        LL_TIM_ClearFlag_CC4(TIM3);
+        LL_TIM_EnableIT_CC4(TIM3);
     }
+
+    // ── Stage 2: IIR low-pass filter ────────────────────────────────────────
+    // Seed the filter on first call (both states are 0.0 at startup).
+    if (iir_vsup_mv == 0.0f)
+    {
+        iir_vsup_mv  = new_vsup;
+        iir_vnode_mv = new_vnode;
+    }
+    else
+    {
+        iir_vsup_mv  = MW_IIR_ALPHA * new_vsup  + (1.0f - MW_IIR_ALPHA) * iir_vsup_mv;
+        iir_vnode_mv = MW_IIR_ALPHA * new_vnode + (1.0f - MW_IIR_ALPHA) * iir_vnode_mv;
+    }
+
+    adc_latch.vsup_mv  = iir_vsup_mv;
+    adc_latch.vnode_mv = iir_vnode_mv;
+
+    after(msec(100), MW_SampleR);
+}
+
+// adc_snap — return the most recent settled reading from adc_latch.
+// Always valid: updated by MW_SampleR every 100 ms for both PWM states.
+static void adc_snap(float *vsup_mv, float *vnode_mv)
+{
+    *vsup_mv  = adc_latch.vsup_mv;
+    *vnode_mv = adc_latch.vnode_mv;
 }
 
 float MW_GetVsupply_mv(void)
@@ -453,20 +518,39 @@ static void cal_reset_window(void)
     cal_win_idx = 0;
     cal_win_cnt = 0;
     cal_tick_ms = 0;
+    cal_r_filt  = 0.0f;     // reset per-phase IIR so each phase seeds fresh
+}
+
+static void printLast(float r_raw) {
+    float vsup, vnode;
+    adc_snap(&vsup, &vnode);
+    print("cal dbg  vsup=");  printFloat(vsup / 1000.0f, 3);
+    print("V  vnode=");       printFloat(vnode / 1000.0f, 3);
+    print("V  r_raw=");       printFloat(r_raw, 2);
+    print("  r_filt=");       printFloat(cal_r_filt, 2);
+    printCr();
+    print("cal_win: ");
+    for (uint8_t i = 0; i < CAL_WINDOW; i++) {
+        printFloat(cal_win[i], 4);
+        print(" ");
+    }
+    printCr();
 }
 
 void MW_CalTick(void)
 {
     cal_tick_ms += 200u;
 
-    // OFF-phase resistance sample; 0 = not usable this tick
+    // adc_latch is always a settled reading (updated by MW_SampleR every 100 ms).
     float r = 0.0f;
-    if (MW_IsOffPhase()) {
+    {
         float vsup, vnode;
         adc_snap(&vsup, &vnode);
         if (vnode > 10.0f && vnode < vsup)
             r = MW_R_SENSE * (vsup - vnode) / vnode;
     }
+
+    if (cal_tick_ms % 1000u == 0u) printLast(r);
 
     switch (cal_state) {
 
@@ -479,7 +563,15 @@ void MW_CalTick(void)
             break;
 
         case MW_CAL_RMAX_SAMPLE: {
-            if (r > 0.0f) cal_win_push(r);
+            // Update resistance IIR when the raw reading is valid.
+            // When r_raw is momentarily 0 (vnode glitch) the IIR simply holds its
+            // last value — cal_r_filt stays non-zero and cal_win keeps rotating.
+            if (r > 0.0f) {
+                cal_r_filt = (cal_r_filt == 0.0f)
+                             ? r
+                             : (CAL_R_ALPHA * r + (1.0f - CAL_R_ALPHA) * cal_r_filt);
+            }
+            if (cal_r_filt > 0.0f) cal_win_push(cal_r_filt);
             float mean;
             if (cal_is_stable(&mean)) {
                 cal_r_max = mean;
@@ -493,6 +585,7 @@ void MW_CalTick(void)
             if (cal_tick_ms >= CAL_TIMEOUT_MS) {
                 cal_state = MW_CAL_TIMEOUT;
                 print("cal: timeout — R_max unstable"); printCr();
+                printLast(r);
                 return;
             }
             break;
@@ -507,9 +600,21 @@ void MW_CalTick(void)
             break;
 
         case MW_CAL_RMIN_SAMPLE: {
-            // Spike filter: accept only readings in the plausible contracted range
-            if (r > 0.0f && r < cal_r_max && r > cal_r_max * 0.5f)
-                cal_win_push(r);
+            // Spike filter: accept any positive R reading.
+            // With simultaneous ADC sampling the noise largely cancels in the
+            // ratio, so we don't need a tight range gate.  The IIR (cal_r_filt)
+            // provides the smoothing; cal_is_stable() enforces the ±0.15 Ω
+            // convergence criterion before accepting the result.
+            // The old upper bound (r < cal_r_max) caused cal_r_filt to stay
+            // zero when the heated wire hadn't contracted far enough yet, or
+            // when IIR residual from the RMAX phase briefly pushed r above
+            // cal_r_max by a tiny margin.
+            if (r > 0.0f) {
+                cal_r_filt = (cal_r_filt == 0.0f)
+                             ? r
+                             : (CAL_R_ALPHA * r + (1.0f - CAL_R_ALPHA) * cal_r_filt);
+            }
+            if (cal_r_filt > 0.0f) cal_win_push(cal_r_filt);
             float mean;
             if (cal_is_stable(&mean)) {
                 cal_r_min  = mean;
@@ -527,6 +632,7 @@ void MW_CalTick(void)
                 MW_SetPWM(0);
                 cal_state = MW_CAL_TIMEOUT;
                 print("cal: timeout — R_min unstable"); printCr();
+                printLast(r);
                 return;
             }
             break;

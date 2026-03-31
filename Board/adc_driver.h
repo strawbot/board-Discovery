@@ -44,6 +44,23 @@ extern "C" {
  */
 #define ADC_PRESCALER           LL_ADC_CLOCK_SYNC_PCLK_DIV4
 
+/**
+ * DMA oversampling factor.
+ *
+ * The DMA circular buffer holds ADC_OVERSAMPLE complete 4-channel sweeps.
+ * ADC_GetLastRaw() averages all copies of each channel before returning,
+ * acting as a hardware-rate FIR box filter.
+ *
+ * At 21 MHz ADC clock with 56-cycle sample time:
+ *   one 4-channel sweep ≈ 13 µs  →  scan rate ≈ 77 kHz
+ *   ADC_OVERSAMPLE = 20  →  averaging window ≈ 261 µs
+ *
+ * 261 µs ≈ 1.04 periods of a 4 kHz interferer, giving near-complete
+ * cancellation of the 4 kHz fundamental by coherent averaging.
+ * Increase toward 32 for heavier filtering at the cost of RAM (64 bytes).
+ */
+#define ADC_OVERSAMPLE          20U
+
 /* -------------------------------------------------------------------------
  * Channel index – matches DMA buffer order (rank 1 … rank 7)
  * ---------------------------------------------------------------------- */
@@ -108,6 +125,80 @@ void ADC_Driver_Update(ADC_Results_t *results);
  * @param[in]  results  Previously filled by ADC_Driver_Update().
  */
 void ADC_Driver_PrintAll(const ADC_Results_t *results);
+
+/**
+ * @brief  Read the two external muscle-wire channels directly from the DMA
+ *         buffer without triggering any new conversion or blocking.
+ *
+ * Safe to call from ISR context: the implementation is two LDRH instructions
+ * against the volatile s_dma_buf[] array — no locking, no processing.
+ *
+ * @param[out] in3_out  Raw 12-bit code for IN3 (PA3 — supply sense).
+ * @param[out] in8_out  Raw 12-bit code for IN8 (PB0 — node sense).
+ */
+void ADC_GetLastRaw(uint16_t *in3_out, uint16_t *in8_out);
+
+/**
+ * @brief  Return the most recently calibrated VDDA in millivolts.
+ *
+ * Updated by each call to ADC_Driver_Update().  Defaults to 3300 mV until
+ * a full update has been performed.  Used by lightweight callers that
+ * obtain raw codes via ADC_GetLastRaw() and need to convert to voltages.
+ *
+ * Formula: voltage_mv = raw * ADC_GetVDDA_mv() / 4095.0f
+ */
+float ADC_GetVDDA_mv(void);
+
+/* -------------------------------------------------------------------------
+ * Dual regular simultaneous single-shot  (ADC1 master IN3, ADC2 slave IN8)
+ *
+ * Both channels are captured at exactly the same instant so that supply-
+ * rail noise common to vsup and vnode cancels in the R_wire ratio:
+ *
+ *   R_wire = R_sense × (vsup − vnode) / vnode
+ *          = R_sense × (k·V_dc + k·v_noise − k·V_dc − k·v_noise) / ...
+ *                              ^^ noise cancels when sampled together ^^
+ *
+ * One simultaneous pair takes ~1.5 µs  (3 sample + 12 convert = 15 ADC
+ * clock cycles at 21 MHz).  No DMA; results are read directly from CDR.
+ *
+ * Usage:
+ *   ADC_SimInit();             // once, from MW_Init()
+ *   ADC_SimTrigger();          // arm one conversion pair
+ *   while (!ADC_SimReady()) {} // wait ~1.5 µs
+ *   ADC_SimRead(&vsup, &vnode);
+ *
+ * Calling context:  ADC_SimTrigger / ADC_SimReady / ADC_SimRead may be
+ * called from ISR or main-loop context.
+ *
+ * Conflict with ADC_Driver_Update():  ADC_Driver_Update() temporarily
+ * points ADC1 rank-1 at VREFINT/TEMP/VBAT for its internal-channel reads.
+ * ADC_SimTrigger() re-sets rank-1 to IN3 before each trigger, so there is
+ * no persistent conflict.  Do not call ADC_SimTrigger while a Driver_Update
+ * is blocking inside read_internal_channels().
+ * ---------------------------------------------------------------------- */
+
+/** @brief  Configure ADC1+ADC2 for dual regular simultaneous mode.
+ *          Stops the ADC2 continuous DMA scan; call once from MW_Init(). */
+void ADC_SimInit(void);
+
+/** @brief  Arm one simultaneous conversion of IN3 (ADC1) and IN8 (ADC2).
+ *          Re-sets ADC1 rank-1 to IN3 so a preceding Driver_Update cannot
+ *          leave a stale channel assignment. */
+void ADC_SimTrigger(void);
+
+/** @brief  Return true when both ADC1 (master) and ADC2 (slave) EOC flags
+ *          are set, indicating the simultaneous conversion has completed. */
+bool ADC_SimReady(void);
+
+/** @brief  Read results after ADC_SimReady() returns true.
+ *
+ *  Reads ADC1->DR (vsup) and ADC2->DR (vnode) directly.  Reading each DR
+ *  also clears its EOC flag, readying the pair for the next ADC_SimTrigger.
+ *
+ *  @param[out] raw_vsup   12-bit ADC1 result for IN3 (PA3, supply sense).
+ *  @param[out] raw_vnode  12-bit ADC2 result for IN8 (PB0, node sense). */
+void ADC_SimRead(uint16_t *raw_vsup, uint16_t *raw_vnode);
 
 #ifdef __cplusplus
 }

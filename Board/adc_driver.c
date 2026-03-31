@@ -121,7 +121,17 @@
  * DMA result buffer  (volatile – written by DMA hardware)
  * ====================================================================== */
 
-static volatile uint16_t s_dma_buf[ADC_DMA_CHANNELS];
+/* DMA circular buffer — ADC_OVERSAMPLE complete 4-channel sweeps.
+ * DMA writes rank 1..4 repeatedly: [IN3,IN8,IN9,IN12, IN3,IN8,IN9,IN12, ...]
+ * Averaging all ADC_OVERSAMPLE copies of each slot in ADC_GetLastRaw()
+ * implements a box-filter FIR spanning ~261 µs at the ADC scan rate,
+ * which nearly cancels a 4 kHz interferer (period = 250 µs).             */
+static volatile uint16_t s_dma_buf[ADC_DMA_CHANNELS * ADC_OVERSAMPLE];
+
+/* Last calibrated VDDA — updated by ADC_Driver_Update(), read by ADC_GetVDDA_mv().
+ * Initialised to the nominal 3300 mV so callers get a reasonable value before
+ * the first full update. */
+static float s_vdda_mv = 3300.0f;
 
 /* =========================================================================
  * Private helper – GPIO
@@ -179,7 +189,7 @@ static void adc_dma_init(void)
     LL_DMA_SetMemoryIncMode        (DMA2, LL_DMA_STREAM_2, LL_DMA_MEMORY_INCREMENT);
     LL_DMA_SetPeriphSize           (DMA2, LL_DMA_STREAM_2, LL_DMA_PDATAALIGN_HALFWORD);
     LL_DMA_SetMemorySize           (DMA2, LL_DMA_STREAM_2, LL_DMA_MDATAALIGN_HALFWORD);
-    LL_DMA_SetDataLength           (DMA2, LL_DMA_STREAM_2, ADC_DMA_CHANNELS);
+    LL_DMA_SetDataLength           (DMA2, LL_DMA_STREAM_2, ADC_DMA_CHANNELS * ADC_OVERSAMPLE);
     LL_DMA_SetPeriphAddress        (DMA2, LL_DMA_STREAM_2, (uint32_t)&ADC2->DR);
     LL_DMA_SetMemoryAddress        (DMA2, LL_DMA_STREAM_2, (uint32_t)s_dma_buf);
 
@@ -389,25 +399,34 @@ static void read_internal_channels(uint16_t *temp_raw,
 void ADC_Driver_Update(ADC_Results_t *results)
 {
     /* ------------------------------------------------------------------
-     * Step 1: snapshot the 4-slot DMA buffer (external pins only).
+     * Step 1: simultaneous single-shot for IN3 (vsup) and IN8 (vnode).
+     *
+     * The ADC2 continuous DMA scan was retired by ADC_SimInit(); the dual
+     * regular simultaneous path gives truly co-phased samples so that
+     * supply-rail noise cancels in the R_wire ratio.
+     *
+     * IN9 and IN12 are not used by any current consumers; zero them so
+     * the result struct is fully initialised.
      * ---------------------------------------------------------------- */
-    uint16_t snap[ADC_DMA_CHANNELS];
-
-    __disable_irq();
-    memcpy(snap, (const void *)s_dma_buf, sizeof(snap));
-    __enable_irq();
-
-    for (uint32_t i = 0U; i < ADC_DMA_CHANNELS; i++)
-    {
-        results->raw[i] = snap[i];
-    }
+    ADC_SimTrigger();
+    while (!ADC_SimReady()) {}
+    ADC_SimRead(&results->raw[ADC_IDX_IN3], &results->raw[ADC_IDX_IN8]);
+    results->raw[ADC_IDX_IN9]  = 0U;
+    results->raw[ADC_IDX_IN12] = 0U;
 
     /* ------------------------------------------------------------------
      * Step 2: single-shot reads on ADC1 for TEMP, VREFINT, and VBAT.
+     *
+     * adc1_read_channel() temporarily points ADC1 rank-1 at the internal
+     * channel under measurement.  Restore rank-1 to IN3 afterward so
+     * that the next ADC_SimTrigger() call picks up the right channel.
      * ---------------------------------------------------------------- */
     read_internal_channels(&results->raw[ADC_IDX_TEMP],
                            &results->raw[ADC_IDX_VREFINT],
                            &results->raw[ADC_IDX_VBAT]);
+
+    /* Restore ADC1 rank-1 → IN3 for subsequent ADC_SimTrigger() calls. */
+    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
 
     /* ------------------------------------------------------------------
      * Step 3: calibrate VDDA from the VREFINT factory cal word.
@@ -420,6 +439,7 @@ void ADC_Driver_Update(ADC_Results_t *results)
         / (float)results->raw[ADC_IDX_VREFINT];
 
     results->vdda_mv = vdda_mv;
+    s_vdda_mv        = vdda_mv;     /* cache for ADC_GetVDDA_mv() callers */
 
     /* ------------------------------------------------------------------
      * Step 4: external channel voltages.
@@ -485,6 +505,164 @@ void ADC_Driver_Update(ADC_Results_t *results)
 
     results->voltage_mv[ADC_IDX_VBAT] = vbat_mv;
     results->vbat_v = vbat_mv / 1000.0f;
+}
+
+/* =========================================================================
+ * ADC_GetLastRaw / ADC_GetVDDA_mv  — legacy accessors
+ *
+ * ADC_GetLastRaw() is superseded by ADC_SimRead() now that the ADC2
+ * continuous DMA scan has been retired in favour of dual simultaneous
+ * single-shot.  The DMA buffer (s_dma_buf[]) is no longer refreshed after
+ * ADC_SimInit() is called.  This function is retained for reference but
+ * should not be called after MW_Init() has run.
+ * ====================================================================== */
+
+void ADC_GetLastRaw(uint16_t *in3_out, uint16_t *in8_out)
+{
+    uint32_t sum3 = 0u, sum8 = 0u;
+    for (uint32_t i = 0u; i < ADC_DMA_CHANNELS * ADC_OVERSAMPLE; i += ADC_DMA_CHANNELS)
+    {
+        sum3 += s_dma_buf[i + ADC_IDX_IN3];
+        sum8 += s_dma_buf[i + ADC_IDX_IN8];
+    }
+    *in3_out = (uint16_t)(sum3 / ADC_OVERSAMPLE);
+    *in8_out = (uint16_t)(sum8 / ADC_OVERSAMPLE);
+}
+
+float ADC_GetVDDA_mv(void)
+{
+    return s_vdda_mv;
+}
+
+/* =========================================================================
+ * Dual regular simultaneous single-shot  (ADC1 master IN3 + ADC2 slave IN8)
+ *
+ * Architecture
+ * ------------
+ * The ADC2 continuous DMA scan is retired.  In its place, ADC1 and ADC2 are
+ * configured for dual regular simultaneous mode (CCR.MULTI = 0x06).
+ * A single SW trigger on ADC1 starts both ADCs at the same clock cycle,
+ * so vsup (IN3/PA3) and vnode (IN8/PB0) are captured simultaneously.
+ *
+ * Because both samples share the same supply-noise phase, the noise cancels
+ * exactly in the R_wire ratio even without oversampling:
+ *   R_wire = R_sense × (vsup−vnode)/vnode   →  noise terms cancel.
+ *
+ * Result access
+ * -------------
+ * In dual mode, ADC1->DR holds the master result (IN3/vsup) and ADC2->DR
+ * holds the slave result (IN8/vnode).  CDR[15:0] mirrors ADC1->DR and
+ * CDR[31:16] mirrors ADC2->DR (RM0090 §13.13.20), but reading individual
+ * DR registers is more straightforward and avoids CDR population timing
+ * concerns.  ADC_SimRead reads ADC1->DR and ADC2->DR directly.
+ *
+ * Conflict handling with ADC_Driver_Update
+ * -----------------------------------------
+ * ADC_Driver_Update() calls adc1_read_channel() for VREFINT/TEMP/VBAT, which
+ * temporarily points ADC1 rank-1 at those internal channels.  ADC_SimTrigger()
+ * unconditionally re-sets rank-1 to IN3 before each trigger, so stale channel
+ * assignments from a preceding Driver_Update do not affect muscle-wire reads.
+ * Do not call ADC_SimTrigger inside read_internal_channels().
+ * ====================================================================== */
+
+void ADC_SimInit(void)
+{
+    /* ── Stop DMA and disable BOTH ADCs ────────────────────────────────────
+     *
+     * RM0090 §13.9: "The MULTI[4:0] bits must only be changed when all ADCs
+     * are disabled."  ADC1 must be disabled here even though adc1_init()
+     * already started it — failing to do so leaves the pair in an undefined
+     * state and conversions produce zeros.
+     *
+     * ADC2's continuous DMA scan is also retired at this point; it is
+     * replaced by single-shot slave operation triggered by ADC1.           */
+    LL_DMA_DisableStream(DMA2, LL_DMA_STREAM_2);
+    while (LL_DMA_IsEnabledStream(DMA2, LL_DMA_STREAM_2)) {}
+    LL_ADC_Disable(ADC2);
+    LL_ADC_Disable(ADC1);
+
+    /* ── ADC common: dual regular simultaneous mode ─────────────────────────
+     * MULTI[4:0] = 0x06 = Regular simultaneous mode only.
+     * Use ADC123_COMMON (not 'ADC') — the correct pointer to the common
+     * register block on all STM32F4 header versions.
+     * ADCPRE [17:16] is preserved; only the MULTI field is changed.        */
+    ADC123_COMMON->CCR = (ADC123_COMMON->CCR & ~ADC_CCR_MULTI_Msk)
+                       | (0x06U << ADC_CCR_MULTI_Pos);
+
+    /* ── ADC1: master — rank-1 → IN3 (PA3), 3-cycle sample ─────────────────
+     * All other ADC1 settings (resolution, alignment, SW trigger, single-
+     * shot, no DMA, scan-disable) were established by adc1_init() and are
+     * unchanged.  Only the rank assignment and sample time for the external
+     * channel need adding.                                                  */
+    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_3, LL_ADC_SAMPLINGTIME_3CYCLES);
+    LL_ADC_REG_SetSequencerRanks (ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
+
+    /* ── ADC2: slave — rank-1 → IN8 (PB0), 3-cycle, single-shot, no DMA ───
+     * In regular simultaneous mode ADC2 follows ADC1's trigger.  Its own
+     * trigger-source and continuous-mode settings are irrelevant to hardware
+     * but are configured consistently for clarity.                          */
+    LL_ADC_SetResolution          (ADC2, LL_ADC_RESOLUTION_12B);
+    LL_ADC_SetDataAlignment       (ADC2, LL_ADC_DATA_ALIGN_RIGHT);
+    LL_ADC_SetSequencersScanMode  (ADC2, LL_ADC_SEQ_SCAN_DISABLE);
+    LL_ADC_REG_SetTriggerSource   (ADC2, LL_ADC_REG_TRIG_SOFTWARE);
+    LL_ADC_REG_SetContinuousMode  (ADC2, LL_ADC_REG_CONV_SINGLE);
+    LL_ADC_REG_SetSequencerLength (ADC2, LL_ADC_REG_SEQ_SCAN_DISABLE);
+    LL_ADC_REG_SetSequencerRanks  (ADC2, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_8);
+    LL_ADC_SetChannelSamplingTime (ADC2, LL_ADC_CHANNEL_8, LL_ADC_SAMPLINGTIME_3CYCLES);
+    LL_ADC_REG_SetDMATransfer     (ADC2, LL_ADC_REG_DMA_TRANSFER_NONE);
+
+    /* ── Re-enable both ADCs ────────────────────────────────────────────────
+     * t_STAB stabilisation delay is required after each ADON set before the
+     * first conversion.  200 NOPs ≈ 1.2 µs at 168 MHz.
+     *
+     * Also force EOCS = 1 on both ADCs (EOC set after each single conversion,
+     * not only at sequence end).  MX_ADC1_Init() sets this on ADC1, but it
+     * is cleared by LL_ADC_Disable so it must be restored explicitly.      */
+    LL_ADC_Enable(ADC1);
+    for (volatile uint32_t i = 0U; i < 200U; i++) { __NOP(); }
+    LL_ADC_REG_SetFlagEndOfConversion(ADC1, LL_ADC_REG_FLAG_EOC_UNITARY_CONV);
+
+    LL_ADC_Enable(ADC2);
+    for (volatile uint32_t i = 0U; i < 200U; i++) { __NOP(); }
+    LL_ADC_REG_SetFlagEndOfConversion(ADC2, LL_ADC_REG_FLAG_EOC_UNITARY_CONV);
+}
+
+void ADC_SimTrigger(void)
+{
+    /* Re-assert IN3 on ADC1 rank-1.  A preceding ADC_Driver_Update() call
+     * may have left ADC1 rank-1 pointing at VREFINT, TEMP, or VBAT.       */
+    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
+    /* Clear stale EOC flags on both master and slave before arming.        */
+    LL_ADC_ClearFlag_EOCS(ADC1);
+    LL_ADC_ClearFlag_EOCS(ADC2);
+    /* In regular simultaneous mode ADC1's SW trigger also starts ADC2.    */
+    LL_ADC_REG_StartConversionSWStart(ADC1);
+}
+
+bool ADC_SimReady(void)
+{
+    /* Both master (ADC1) and slave (ADC2) must have set EOC before reading.
+     * In regular simultaneous mode they finish at the same instant (same
+     * channel + sample-time), but checking both avoids reading a stale
+     * ADC2 result if EOC propagation is slightly delayed.                  */
+    return (LL_ADC_IsActiveFlag_EOCS(ADC1) != 0U) &&
+           (LL_ADC_IsActiveFlag_EOCS(ADC2) != 0U);
+}
+
+void ADC_SimRead(uint16_t *raw_vsup, uint16_t *raw_vnode)
+{
+    /* Read individual DR registers rather than CDR.
+     *
+     * In dual regular simultaneous mode both ADC1->DR and ADC2->DR hold
+     * their respective results independently of each other.  Reading each
+     * DR directly avoids any timing dependency on CDR population and
+     * naturally clears the EOC flag of each ADC for the next trigger.
+     *
+     *   ADC1->DR = master = IN3 (PA3) = vsup
+     *   ADC2->DR = slave  = IN8 (PB0) = vnode
+     */
+    *raw_vsup  = (uint16_t)(ADC1->DR & 0x0FFFu);
+    *raw_vnode = (uint16_t)(ADC2->DR & 0x0FFFu);
 }
 
 /* =========================================================================
