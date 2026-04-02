@@ -425,6 +425,28 @@ void ADC_Driver_Update(ADC_Results_t *results)
                            &results->raw[ADC_IDX_VREFINT],
                            &results->raw[ADC_IDX_VBAT]);
 
+    /* ── ADC2 overrun cleanup after internal-channel reads ─────────────────
+     *
+     * In dual regular simultaneous mode, every ADC1 SWSTART issued inside
+     * adc1_read_channel() also fires ADC2 as the slave (RM0090 §13.9).
+     * read_internal_channels() issues three ADC1 triggers without ever
+     * reading ADC2→DR, so ADC2's OVR (overrun) flag is set by the second
+     * piggyback conversion.
+     *
+     * RM0090 §13.3.5: "Until OVR is cleared by software writing 0, no new
+     * data is loaded to ADC_DR and the EOC flag is not set."
+     *
+     * If OVR is still set when the next ADC_SimTrigger fires, ADC2 never
+     * sets its EOC flag and ADC_SimReady() hangs indefinitely on the second
+     * and all subsequent calls.
+     *
+     * Fix: drain the stale piggyback result from ADC2→DR, then clear OVR.
+     * Reading DR before clearing OVR is required; writing OVR=0 while DR
+     * still holds an unread result would immediately re-assert OVR on the
+     * very next conversion.                                                  */
+    (void)ADC2->DR;              /* discard stale piggyback result from IN8  */
+    LL_ADC_ClearFlag_OVR(ADC2); /* clear overrun — restores normal EOC       */
+
     /* Restore ADC1 rank-1 → IN3 for subsequent ADC_SimTrigger() calls. */
     LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
 
@@ -635,6 +657,12 @@ void ADC_SimTrigger(void)
     /* Clear stale EOC flags on both master and slave before arming.        */
     LL_ADC_ClearFlag_EOCS(ADC1);
     LL_ADC_ClearFlag_EOCS(ADC2);
+    /* Defensive OVR clear on ADC2.
+     * ADC_Driver_Update() drains the piggyback result and clears OVR after
+     * read_internal_channels(), but clear it here too in case ADC_SimTrigger
+     * is called from other paths (e.g. MW_TIM3_IRQHandler, MW_SampleR).
+     * With OVR set, ADC2 does not update DR or set EOC (RM0090 §13.3.5).  */
+    LL_ADC_ClearFlag_OVR(ADC2);
     /* In regular simultaneous mode ADC1's SW trigger also starts ADC2.    */
     LL_ADC_REG_StartConversionSWStart(ADC1);
 }
