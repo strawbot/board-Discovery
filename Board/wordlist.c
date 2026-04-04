@@ -42,6 +42,9 @@ NAMES(wordnames)
 	NAME("dump-profile")		//  emit captured profile as CSV to CLI output
 	NAME("cal-wire")		//  run two-point self-calibration: R_max at 0% then R_min at 70%
 	NAME("show-cal")		//  show calibration state, R_max, R_min and measured travel span
+	NAME("set-per")		//   ( n ) set closed-loop contraction target to n percent (0-100) and enable controller
+	NAME("show-cl")		//   show closed-loop controller state: target, measured, error, integral, PWM, region
+	NAME("cl-off")		//   disable closed-loop controller; PWM holds at last value
 	NAME("show-dac")		//  show DAC sine wave output: frequency, samples, timer registers
 	NAME("dacon")		//  start sine wave on PA4
 	NAME("dacoff")		//  stop sine wave on PA4
@@ -201,6 +204,9 @@ void MW_CLI_StartProfile(void);
 void MW_DumpProfile(void);
 void MW_CLI_Calibrate(void);
 void MW_CLI_ShowCal(void);
+void MW_CLI_SetPercent(void);
+void MW_CLI_ShowCL(void);
+void MW_CLI_CLOff(void);
 void show_dac(void);
 void DAC_Sine_Start(void);
 void DAC_Sine_Stop(void);
@@ -360,6 +366,9 @@ BODIES(wordbodies)
 	BODY(MW_DumpProfile)
 	BODY(MW_CLI_Calibrate)
 	BODY(MW_CLI_ShowCal)
+	BODY(MW_CLI_SetPercent)
+	BODY(MW_CLI_ShowCL)
+	BODY(MW_CLI_CLOff)
 	BODY(show_dac)
 	BODY(DAC_Sine_Start)
 	BODY(DAC_Sine_Stop)

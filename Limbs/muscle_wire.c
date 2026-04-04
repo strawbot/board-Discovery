@@ -10,6 +10,7 @@
 #include "muscle_wire.h"
 
 #include <string.h>
+#include <math.h>
 
 #include "stm32f4xx.h"
 #include "stm32f4xx_ll_bus.h"
@@ -59,6 +60,10 @@ static volatile struct {
 // IIR filter state — initialised to 0; MW_SampleR seeds from first reading.
 static float iir_vsup_mv   = 0.0f;
 static float iir_vsense_mv = 0.0f;
+
+// ── Closed-loop controller state ──────────────────────────────────────────────
+static float cl_target_pct = -1.0f;    // < 0 = disabled
+static float cl_integral   =  0.0f;
 
 // ── Calibration state ─────────────────────────────────────────────────────────
 static MW_CalState_t  cal_state   = MW_CAL_IDLE;
@@ -144,6 +149,10 @@ void MW_Init(void)
     // Register calibration tick so the scheduler can find it by name.
     // MW_CLI_Calibrate() starts it; it stops itself when done.
     namedAction(MW_CalTick);
+
+    // Register closed-loop tick so the scheduler can find it by name.
+    // MW_SetTarget() starts it; it stops itself when disabled.
+    namedAction(MW_CLTick);
 
     // ── Initial VDDA calibration ──────────────────────────────────────────
     // s_vdda_mv defaults to 3300 mV.  On this board VDDA is ~2928 mV; using
@@ -557,6 +566,10 @@ static void cal_reset_window(void)
     cal_win_cnt = 0;
     cal_tick_ms = 0;
     cal_r_filt  = 0.0f;     // reset per-phase IIR so each phase seeds fresh
+    // Zero the array so stale values from a previous phase are not visible
+    // in printLast debug output.  The stability check ignores unwritten slots
+    // via cal_win_cnt, but zeroed values make the debug printout unambiguous.
+    for (uint8_t i = 0; i < CAL_WINDOW; i++) cal_win[i] = 0.0f;
 }
 
 static void printLast(float r_raw) {
@@ -664,6 +677,34 @@ void MW_CalTick(void)
                 print("cal: span  = "); printFloat(span, 2);
                 print(" ohm  ("); printFloat(100.0f * span / cal_r_max, 1);
                 print("% dR/R)"); printCr();
+
+                // Quality check: warn if the span looks implausibly narrow.
+                //
+                // A healthy calibration should capture at least 30 % dR/R
+                // (≈ 6 Ω on a wire with R_max ≈ 20 Ω).  A small span almost
+                // always means the wire was still warm when R_max was sampled —
+                // the 5-second settle window was not long enough.
+                //
+                // The two thresholds are intentionally independent so the
+                // message is specific:
+                //   R_max < 12 Ω → wire was partially contracted at start.
+                //   span  < 2 Ω  → travel range too small for reliable control.
+                bool r_max_suspect = (cal_r_max < 12.0f);
+                bool span_suspect  = (span < 2.0f);
+                if (r_max_suspect || span_suspect) {
+                    print("cal: WARNING — calibration quality is poor:"); printCr();
+                    if (r_max_suspect) {
+                        print("  R_max "); printFloat(cal_r_max, 2);
+                        print(" ohm is below 12 ohm; wire was not fully relaxed."); printCr();
+                        print("  Run cal-wire again after the wire has cooled"); printCr();
+                        print("  (show-pwm R wire should be near 20 ohm first)."); printCr();
+                    }
+                    if (span_suspect) {
+                        print("  span "); printFloat(span, 2);
+                        print(" ohm is too small; contraction % will be noisy."); printCr();
+                    }
+                    print("  Contraction readings marked (cal) are unreliable."); printCr();
+                }
                 return;     // done — do not reschedule
             }
             if (cal_tick_ms >= CAL_TIMEOUT_MS) {
@@ -774,6 +815,14 @@ void MW_CLI_ShowPWM(void)
         printCr();
     }
 
+    print("cl target");  tabTo(COL_VALUE);
+    if (cl_target_pct >= 0.0f) {
+        printFloat(cl_target_pct, 1); tabTo(COL_UNIT); print("%  active");
+    } else {
+        print("off");
+    }
+    printCr();
+
     print("---");
     printCr();
 }
@@ -785,6 +834,7 @@ void MW_CLI_SetPWM(void)
 {
     uint8_t pct = (uint8_t)ret();
     uint8_t prev = pwm_pct;
+    MW_SetTarget(-1.0f);    // manual override — disable closed loop
     MW_SetPWM(pct);
 
     printDec(prev); print("% -> "); printDec(pwm_pct); print("%");
@@ -821,6 +871,7 @@ void MW_CLI_Calibrate(void)
         return;
     }
 
+    MW_SetTarget(-1.0f);    // disable closed loop during calibration
     MW_SetPWM(0);
     cal_reset_window();
     cal_state = MW_CAL_RMAX_SETTLE;
@@ -861,6 +912,179 @@ void MW_CLI_ShowCal(void)
 
         print("travel"); tabTo(COL_VALUE);
         printFloat(100.0f * span / cal_r_max, 1); tabTo(COL_UNIT); print("% dR/R"); printCr();
+
+        print("quality"); tabTo(COL_VALUE);
+        if (cal_r_max < 12.0f)
+            print("POOR — R_max too low (wire was warm at calibration start)");
+        else if (span < 2.0f)
+            print("POOR — span too small for reliable contraction control");
+        else
+            print("ok");
+        printCr();
+    }
+
+    print("---"); printCr();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Closed-loop contraction controller
+//
+// PI controller: every CL_PERIOD_MS ms the tick samples the current contraction,
+// computes an error against the target, and adjusts PWM accordingly.
+//
+// Three non-linearities are handled explicitly:
+//
+//   1. Deadband  — no action within ±CL_DEADBAND_PCT of target; integral
+//                  is zeroed here to prevent windup at rest.
+//
+//   2. Gain scheduling — Kp is scaled down in the low-contraction (wire cold,
+//                  sluggish response) and high-contraction (near thermal limit)
+//                  regions to reduce overshoot and thermal stress.
+//
+//   3. Asymmetric cooling — if the wire overshoots the target by more than
+//                  CL_FAST_COOL_THRESH %, PWM is zeroed immediately.  Cooling
+//                  is passive so gradual reduction is pointless; zeroing lets
+//                  the wire cool as fast as physics allows.
+//
+// The loop is disabled automatically when setpwm or cal-wire takes control.
+// ═════════════════════════════════════════════════════════════════════════════
+
+void MW_SetTarget(float pct)
+{
+    if (pct < 0.0f)
+    {
+        cl_target_pct = -1.0f;
+        cl_integral   =  0.0f;
+        return;
+    }
+    if (pct > 100.0f) pct = 100.0f;
+
+    bool was_off  = (cl_target_pct < 0.0f);
+    cl_target_pct = pct;
+    cl_integral   = 0.0f;    // reset integral on every new target
+
+    if (was_off)
+        after(msec(CL_PERIOD_MS), MW_CLTick);   // start the tick chain
+}
+
+float MW_GetTarget(void)     { return cl_target_pct; }
+bool  MW_IsClosedLoop(void)  { return cl_target_pct >= 0.0f; }
+
+// ── MW_CLTick — 500 ms self-rescheduling PI control step ──────────────────
+void MW_CLTick(void)
+{
+    if (cl_target_pct < 0.0f) return;   // disabled — do not reschedule
+
+    float measured = MW_GetContraction();
+    float error    = cl_target_pct - measured;
+
+    // ── 1. Deadband: hold current PWM when close enough ──────────────────
+    if (fabsf(error) <= CL_DEADBAND_PCT)
+    {
+        cl_integral = 0.0f;             // bleed off integral at rest
+        after(msec(CL_PERIOD_MS), MW_CLTick);
+        return;
+    }
+
+    // ── 2. Asymmetric cooling: big overshoot → kill power, let wire cool ─
+    if (error < -CL_FAST_COOL_THRESH)
+    {
+        MW_SetPWM(0);
+        cl_integral = 0.0f;
+        after(msec(CL_PERIOD_MS), MW_CLTick);
+        return;
+    }
+
+    // ── 3. Gain scheduling: reduce Kp at the extremes ────────────────────
+    float kp_scale = (cl_target_pct < CL_LOW_THRESHOLD ||
+                      cl_target_pct > CL_HIGH_THRESHOLD)
+                     ? CL_EDGE_GAIN : 1.0f;
+
+    // ── 4. PI update ──────────────────────────────────────────────────────
+    cl_integral += error;
+
+    // Anti-windup: clamp so the integral's PWM contribution stays ≤ CL_I_LIMIT
+    float i_limit = CL_I_LIMIT / (CL_KI > 0.0f ? CL_KI : 1.0f);
+    if (cl_integral >  i_limit) cl_integral =  i_limit;
+    if (cl_integral < -i_limit) cl_integral = -i_limit;
+
+    float adjustment = CL_KP * kp_scale * error + CL_KI * cl_integral;
+
+    // Apply delta to current PWM; clamp to valid range
+    int32_t new_pwm = (int32_t)pwm_pct
+                    + (int32_t)(adjustment >= 0.0f
+                                ? adjustment + 0.5f
+                                : adjustment - 0.5f);
+    if (new_pwm < 0)                       new_pwm = 0;
+    if (new_pwm > (int32_t)MW_PWM_MAX_PCT) new_pwm = (int32_t)MW_PWM_MAX_PCT;
+
+    MW_SetPWM((uint8_t)new_pwm);
+    after(msec(CL_PERIOD_MS), MW_CLTick);
+}
+
+// ── set-per ( n ) — set closed-loop contraction target ────────────────────
+void MW_CLI_SetPercent(void)
+{
+    int32_t n = (int32_t)(uint8_t)ret();   // 0–255 from stack; values >100 invalid
+    if (n < 0 || n > 100)
+    {
+        print("set-per: argument must be 0–100"); printCr();
+        return;
+    }
+    MW_SetTarget((float)n);
+    print("target "); printDec((uint32_t)n); print("%  closed-loop on"); printCr();
+}
+
+// ── cl-off — disable closed-loop controller ───────────────────────────────
+void MW_CLI_CLOff(void)
+{
+    MW_SetTarget(-1.0f);
+    print("closed-loop off"); printCr();
+}
+
+// ── show-cl — show closed-loop controller state ───────────────────────────
+void MW_CLI_ShowCL(void)
+{
+    maybeCr();
+    print("--- closed loop ---"); printCr();
+
+    print("state");      tabTo(COL_VALUE);
+    print(cl_target_pct >= 0.0f ? "active" : "off"); printCr();
+
+    if (cl_target_pct >= 0.0f)
+    {
+        float measured = MW_GetContraction();
+        float error    = cl_target_pct - measured;
+
+        print("target");   tabTo(COL_VALUE);
+        printFloat(cl_target_pct, 1); tabTo(COL_UNIT); print("%"); printCr();
+
+        print("measured");  tabTo(COL_VALUE);
+        if (measured > 0.0f) { printFloat(measured, 1); tabTo(COL_UNIT); print("%"); }
+        else                   print("--");
+        printCr();
+
+        print("error");    tabTo(COL_VALUE);
+        if (measured > 0.0f)
+        {
+            if (error >= 0.0f) print("+");
+            printFloat(error, 1); tabTo(COL_UNIT); print("%");
+            if (fabsf(error) <= CL_DEADBAND_PCT) print("  (in band)");
+        }
+        else { print("--"); }
+        printCr();
+
+        print("integral"); tabTo(COL_VALUE);
+        printFloat(cl_integral, 1); printCr();
+
+        print("PWM");      tabTo(COL_VALUE);
+        printDec(pwm_pct); print("%"); printCr();
+
+        print("region");   tabTo(COL_VALUE);
+        if      (cl_target_pct < CL_LOW_THRESHOLD)  print("low  (reduced gain)");
+        else if (cl_target_pct > CL_HIGH_THRESHOLD) print("high (reduced gain)");
+        else                                         print("mid");
+        printCr();
     }
 
     print("---"); printCr();

@@ -42,6 +42,9 @@ Words // PWM / muscle wire
 	dump-profile	MW_DumpProfile	    // emit captured profile as CSV to CLI output
 	cal-wire		MW_CLI_Calibrate    // run two-point self-calibration: R_max at 0% then R_min at 70%
 	show-cal		MW_CLI_ShowCal      // show calibration state, R_max, R_min and measured travel span
+	set-per			MW_CLI_SetPercent	//  ( n ) set closed-loop contraction target to n percent (0-100) and enable controller
+	show-cl			MW_CLI_ShowCL		//  show closed-loop controller state: target, measured, error, integral, PWM, region
+	cl-off			MW_CLI_CLOff		//  disable closed-loop controller; PWM holds at last value
 End
 
 Words // DAC

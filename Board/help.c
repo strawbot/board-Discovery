@@ -108,6 +108,7 @@ void help(void) {
     printif("c@   ( a - c ) return contents of memory using top stack item as the address (8 bit)\n");
     printif("cal-wire   run two-point self-calibration: R_max at 0% then R_min at 70%\n");
     printif("cbrt   ( f - f  ) calculate the cube root of f\n");
+    printif("cl-off    disable closed-loop controller; PWM holds at last value\n");
     printif("cmove   ( s d n - ) move n bytes from s to d\n");
     printif("constant   ( n - ) <string> give n a name\n");
     printif("cos   ( f -  f  ) calculate the cosine of f\n");
@@ -181,11 +182,13 @@ void help(void) {
     printif("resetcli   reset cli including removing all macros\n");
     printif("s!   ( h a - ) store next into memory using top as address (16 bit)\n");
     printif("s@   ( a - h ) return contents of memory using top stack item as the address (16 bit)\n");
+    printif("set-per    ( n ) set closed-loop contraction target to n percent (0-100) and enable controller\n");
     printif("setpwm   ( n ) set muscle wire PWM duty to n percent (0-70)\n");
     printif("shift   ( n m - p ) shift n by m bit left for minus and right for positive\n");
     printif("show-ADC   show all adc inputs\n");
     printif("show-acc   show accelerometer type, orientation (pitch/roll) and tap count\n");
     printif("show-cal   show calibration state, R_max, R_min and measured travel span\n");
+    printif("show-cl    show closed-loop controller state: target, measured, error, integral, PWM, region\n");
     printif("show-cli   display cli status\n");
     printif("show-dac   show DAC sine wave output: frequency, samples, timer registers\n");
     printif("show-dma   show DMA controller usage: active streams, channels, state, error flags\n");

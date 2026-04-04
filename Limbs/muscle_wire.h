@@ -127,6 +127,47 @@
 #define CAL_RMIN_HEAT_MS    3000u       // ms at max PWM before R_min sampling begins
 #define CAL_TIMEOUT_MS      25000u      // ms before aborting a sampling phase
 
+// ── Closed-loop contraction controller ───────────────────────────────────────
+// PI controller driving PWM to hold a target contraction percentage.
+// MW_CLTick() self-reschedules at CL_PERIOD_MS; started by MW_SetTarget().
+// Calling MW_SetTarget(-1) or MW_CLI_SetPWM() disables the loop.
+//
+// Gain scheduling
+// ───────────────
+//   Three operating regions trade responsiveness vs. stability:
+//     Low  (0 – CL_LOW_THRESHOLD  %): wire is cold, response is slow.
+//                                     Reduced Kp avoids overshoot.
+//     Mid  (CL_LOW_THRESHOLD – CL_HIGH_THRESHOLD): full gain.
+//     High (CL_HIGH_THRESHOLD – 100 %): near thermal ceiling.
+//                                       Reduced Kp protects the wire.
+//
+// Hysteresis / deadband
+// ─────────────────────
+//   No PWM change when |error| ≤ CL_DEADBAND_PCT.
+//   Integral is zeroed inside the band to prevent windup at rest.
+//
+// Asymmetric cooling
+// ──────────────────
+//   When the wire overshoots by more than CL_FAST_COOL_THRESH %,
+//   PWM is zeroed immediately — cooling is passive, so there is no
+//   point gradually reducing power.
+//
+// Tuning notes
+// ────────────
+//   Increase CL_KP  for faster approach (risk: oscillation).
+//   Increase CL_KI  for tighter steady-state (risk: slow windup).
+//   Decrease CL_DEADBAND_PCT for tighter hold (risk: hunting).
+//   Increase CL_PERIOD_MS for slower/gentler updates.
+#define CL_PERIOD_MS         500u    // control update interval
+#define CL_DEADBAND_PCT      2.0f    // ±% — no PWM change inside this band
+#define CL_KP                0.1f    // proportional gain: PWM% per contraction% error
+#define CL_KI                0.03f   // integral gain per tick (500 ms)
+#define CL_I_LIMIT           20.0f   // anti-windup: max integral PWM contribution (%)
+#define CL_LOW_THRESHOLD     20.0f   // below this % contraction: reduced gain
+#define CL_HIGH_THRESHOLD    80.0f   // above this % contraction: reduced gain
+#define CL_EDGE_GAIN         0.4f    // Kp multiplier applied in edge regions
+#define CL_FAST_COOL_THRESH  15.0f   // overshoot > this % → zero PWM immediately
+
 typedef enum {
     MW_CAL_IDLE        = 0,
     MW_CAL_RMAX_SETTLE,     // waiting for wire to cool at 0% PWM
@@ -194,11 +235,23 @@ void           MW_CalTick(void);            // self-rescheduling; started by MW_
 void           MW_SampleR(void);            // 100 ms self-rescheduling: take ON-phase sample
 void           MW_TIM3_IRQHandler(void);    // call from TIM3_IRQHandler in stm32f4xx_it.c
 
+// Closed-loop contraction controller
+// MW_SetTarget() starts the loop; MW_CLTick() must be registered via MW_Init().
+// The loop stops itself when MW_SetTarget(-1) is called or when setpwm / cal-wire
+// takes manual control.
+void    MW_SetTarget(float pct);    // set target % (0–100) and enable; < 0 = disable
+float   MW_GetTarget(void);         // current target, or < 0 if disabled
+bool    MW_IsClosedLoop(void);      // true while loop is active
+void    MW_CLTick(void);            // 500 ms self-rescheduling; registered by MW_Init()
+
 // CLI handlers — bind via discoverywords.txt
 void    MW_CLI_ShowPWM(void);               // show-pwm
 void    MW_CLI_SetPWM(void);                // setpwm        ( n )
 void    MW_CLI_StartProfile(void);          // start-profile  ( n )
 void    MW_CLI_Calibrate(void);             // cal-wire
 void    MW_CLI_ShowCal(void);               // show-cal
+void    MW_CLI_SetPercent(void);            // set-per       ( n )
+void    MW_CLI_ShowCL(void);                // show-cl
+void    MW_CLI_CLOff(void);                 // cl-off
 
 #endif // MUSCLE_WIRE_H_
