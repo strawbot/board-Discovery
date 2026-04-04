@@ -35,6 +35,7 @@ void output();
 #define INT_HI_PRIO     1
 #define INT_LO_PRIO     2
 #define INT_MIN_PRIO    3
+#define in_interrupt()	(__get_IPSR() != 0)
 
 // UTC and time event clocks
 #define CLOCK_MHZ 168u

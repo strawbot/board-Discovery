@@ -2,13 +2,11 @@
 //
 // Hardware (STM32F4DISCOVERY)
 // ───────────────────────────
-//   PWM output : TIM3 CH2  →  PB5 (AF2)  →  ULN2803A input
-//     PA6 is NOT used — it is SPI1_MISO (accelerometer).
-//     PB0/PB1 are NOT used — they are ADC2 IN8/IN9.
+//   PWM output : TIM3 CH2  →  PB5 (AF2)  →  MOSFET gate
 //
-//   ADC readings come from the shared adc_driver (ADC2, continuous DMA).
+//   ADC readings come from the shared adc_driver (dual simultaneous ADC1+ADC2).
 //     ADC_IDX_IN3  (PA3) = CH0 — supply voltage sense divider
-//     ADC_IDX_IN8  (PB0) = CH1 — Node_A / wire sense divider
+//     ADC_IDX_IN8  (PB0) = CH1 — sense resistor (FET source to GND)
 //   No separate DMA is set up here; call MW_Init() after ADC_Driver_Init().
 //
 // Timer clock path
@@ -19,22 +17,25 @@
 //   ARR = 999 →  period = 1 ms  (1 kHz)
 //   CCR = duty_pct × 10          (0–100 %, 0.1 % resolution)
 //
-// Sense circuit — R_SENSE is permanently wired, no switch needed
-// ──────────────────────────────────────────────────────────────
-//   Vsupply → [R_wire] → Node_A ──┬── ULN2803A collector → emitter → GND
-//                                  └── [MW_R_SENSE] ──────────────────> GND
+// Sense circuit — ON-phase measurement
+// ─────────────────────────────────────
+//   5V ──[R_wire]──[FET drain]──[FET source]──[MW_R_SENSE = 1 Ω]── GND
+//                                           ^
+//                                     ADC CH1 (PB0)
 //
-//   During ON  phase: Node_A ≈ Vce_sat (~1 V).  R_sense draws ~4.5 mA —
-//                     negligible against wire current. Reading discarded in SW.
-//   During OFF phase: ULN collector is high-Z. R_sense forms the lower leg
-//                     of the divider with R_wire. Node_A is valid for R calc.
+//   During ON  phase: FET conducts; current flows through R_wire + FET + R_SENSE.
+//                     V_sense = I × R_SENSE = I × 1 Ω  (current-proportional).
+//                     R is valid — sample here.
+//   During OFF phase: FET off; no current path; ADC CH1 ≈ 0 V.  R not valid.
 //
-//   V_node_A = Vsupply × R_SENSE / (R_wire + R_SENSE)
-//   → R_wire = R_SENSE × (Vsupply − V_node) / V_node
+//   Assuming FET fully-on (V_ds ≈ 0):
+//     V_sense = I × 1 Ω
+//     V_wire  = V_supply − V_sense          (≈ V_supply − I)
+//     R_wire  = V_wire / I = MW_R_SENSE × (V_supply − V_sense) / V_sense
 //
 //   ADC_CH0 (supply) divider : R1 = 100 kΩ, R2 = 20 kΩ  → scale = 6.0
-//   ADC_CH1 (node)   divider : Rtop = 82 kΩ, Rbot = 22 kΩ → scale ≈ 4.73
-//   Adjust MW_SCALE_CH0 / MW_SCALE_CH1 to match actual fitted values.
+//   ADC_CH1 (sense)  : direct connection to sense resistor → scale = 1.0
+//   Adjust MW_SCALE_CH0 to match actual fitted resistor values.
 //
 // CLI bindings (discoverywords.txt)
 // ──────────────────────────────────
@@ -43,7 +44,7 @@
 //
 // Profile capture
 // ───────────────
-//   start-profile sets PWM and begins recording one OFF-phase ADC sample
+//   start-profile sets PWM and begins recording one ON-phase ADC sample
 //   every MW_PROFILE_PERIOD_MS milliseconds for MW_PROFILE_LEN samples.
 //   MW_ProfileTick() must be called from the 1 ms HAL SysTick callback:
 //       void HAL_SYSTICK_Callback(void) { MW_ProfileTick(); }
@@ -65,14 +66,15 @@
 #define MW_PWM_MAX_PCT          70u
 
 // ── Sense circuit ─────────────────────────────────────────────────────────────
-// Tune these to match the actual resistor values once fitted.
-#define MW_R_SENSE              220.0f      // Ω — pull-down / sense resistor
+// Tune MW_SCALE_CH0 to match actual supply-divider resistors once fitted.
+// MW_R_SENSE must match the actual sense resistor (1 Ω inline with FET source).
+#define MW_R_SENSE              1.0f        // Ω — inline sense resistor (FET source)
 #define MW_SCALE_CH0            6.00f       // (R1+R2)/R2 for supply divider
-#define MW_SCALE_CH1            4.727f      // (Rtop+Rbot)/Rbot for node divider
+#define MW_SCALE_CH1            1.0f        // direct connection — no divider on sense node
 
 // Wire physical constants (8-inch Flexinol, Teflon-sleeved)
-#define MW_R_WIRE_RELAXED       45.0f       // Ω  cold, no load
-#define MW_R_WIRE_CONTRACTED    38.0f       // Ω  estimated; refine from profile
+#define MW_R_WIRE_RELAXED       8.9f       // Ω  cold, no load
+#define MW_R_WIRE_CONTRACTED    7.7f       // Ω  estimated; refine from profile
 
 // ── Profile capture ───────────────────────────────────────────────────────────
 #define MW_PROFILE_LEN          512u        // total samples per run
@@ -80,39 +82,46 @@
 // Total window = 512 × 50 ms = 25.6 seconds
 
 // ── ADC filtering ─────────────────────────────────────────────────────────────
-// Two-stage filter applied by MW_SampleR at 100 ms intervals (10 Hz):
-//
-//   Stage 1 — DMA oversampling (in adc_driver):
-//     ADC_OVERSAMPLE = 20 sweeps × ~13 µs = 261 µs box filter.
-//     Cancels the 4 kHz supply noise whose period is 250 µs.
-//
-//   Stage 2 — IIR single-pole low-pass (here, on converted float values):
-//     y[n] = α·x[n] + (1−α)·y[n−1]
-//     At 10 Hz: time constant τ ≈ −1 / (f_s · ln(1−α))
-//     MW_IIR_ALPHA = 0.20 → τ ≈ 450 ms  (tracks wire thermal changes,
-//     rejects any residual high-frequency noise that aliased through Stage 1)
+// Single-stage IIR low-pass (on converted float values, at 100 ms intervals):
+//   y[n] = α·x[n] + (1−α)·y[n−1]
+//   At 10 Hz: time constant τ ≈ −1 / (f_s · ln(1−α))
+//   MW_IIR_ALPHA = 0.20 → τ ≈ 450 ms  (tracks wire thermal changes)
 //
 // Increase MW_IIR_ALPHA (toward 1.0) for faster but noisier response.
 // Decrease it for heavier smoothing.
 #define MW_IIR_ALPHA            0.20f
 
 // ── ADC sample timing ─────────────────────────────────────────────────────────
-// TIM3 CC2 interrupt fires at every ON→OFF edge (CNT == CCR2).
-// The ISR immediately arms CC4 as a one-shot at CCR2 + MW_ADC_SETTLE_TICKS.
-// The CC4 interrupt latches both ADC channels into adc_latch at that exact point,
-// giving a deterministic, ringing-free sample every PWM cycle.
+// At the minimum PWM setting (2 % = 20 µs ON time) the sampling window is
+// 10 µs – 17.5 µs, leaving margin on both sides of the FET transition.
+//
+// CC4 fires MW_ADC_SETTLE_TICKS µs after the rising edge (timer wrap).
+// The CC4 ISR then runs MW_ADC_SAMPLES simultaneous ADC1+ADC2 pairs
+// back-to-back, accumulates the results, and averages before storing.
+//
+// One simultaneous pair at 28-cycle sample time:
+//   (28 + 12.5) / 21 MHz ≈ 1.93 µs
+// Four pairs: 4 × 1.93 µs = 7.72 µs
+//
+// At 2 % duty (CCR4 = min(SETTLE, CCR2/2) = min(10,10) = 10 µs):
+//   Sample window: 10.0 – 17.7 µs  ✓  within the 20 µs ON phase
+//
+// For pwm_pct > 0: CC4 armed at CCR4 = min(SETTLE_TICKS, CCR2/2).
+// For pwm_pct = 0: MW_SampleR forces FET ON via a brief direct CCR2 pulse,
+//   spins SETTLE_TICKS µs on the TIM3 counter, runs the burst, then restores
+//   CCR2 = 0.
+//
 // Wire MW_TIM3_IRQHandler() into TIM3_IRQHandler in stm32f4xx_it.c.
-#define MW_ADC_SETTLE_TICKS 100u        // µs after PWM falling edge before ADC sample
+#define MW_ADC_SETTLE_TICKS     10u     // µs into ON phase before first sample
+#define MW_ADC_SAMPLES          4u      // simultaneous pairs per reading (√4 = 2× noise)
 
 // ── Self-calibration ──────────────────────────────────────────────────────────
 // cal-wire procedure: hold 0% until stable (R_max), then max% until stable (R_min).
 // MW_CalTick() self-reschedules at 200 ms; started by MW_CLI_Calibrate().
 #define CAL_WINDOW          8u          // samples in stability window (8 × 200 ms = 1.6 s)
-#define CAL_STABLE_BAND     0.30f       // Ω — max window spread to declare stability
+#define CAL_STABLE_BAND     0.10f       // Ω — max window spread to declare stability
 // IIR applied to R_wire inside MW_CalTick before pushing to the stability window.
-// Filters R directly rather than vsup/vnode separately, so correlated noise cancels.
-// Holds its last value when a raw reading is momentarily invalid (keeps window rotating).
-// α = 0.15 → τ ≈ 1.2 s at the 200 ms CalTick rate.  Raise for faster but noisier tracking.
+// α = 0.15 → τ ≈ 1.2 s at the 200 ms CalTick rate.
 #define CAL_R_ALPHA         0.15f
 #define CAL_RMAX_SETTLE_MS  5000u       // ms at 0% PWM before R_max sampling begins
 #define CAL_RMIN_HEAT_MS    3000u       // ms at max PWM before R_min sampling begins
@@ -121,7 +130,7 @@
 typedef enum {
     MW_CAL_IDLE        = 0,
     MW_CAL_RMAX_SETTLE,     // waiting for wire to cool at 0% PWM
-    MW_CAL_RMAX_SAMPLE,     // collecting stable R_max window
+    MW_CAL_RMAX_SAMPLE,     // collecting stable R_max window (0% PWM, force-on pulses)
     MW_CAL_RMIN_HEAT,       // holding max PWM, waiting for wire to contract
     MW_CAL_RMIN_SAMPLE,     // collecting stable R_min window
     MW_CAL_DONE,
@@ -132,9 +141,9 @@ typedef enum {
 typedef struct {
     uint32_t time_ms;       // ms elapsed since profile start
     uint16_t raw_ch0;       // ADC raw — supply
-    uint16_t raw_ch1;       // ADC raw — node
+    uint16_t raw_ch1;       // ADC raw — sense resistor
     float    v_supply_mv;   // mV scaled
-    float    v_node_mv;     // mV scaled
+    float    v_sense_mv;    // mV across sense resistor (= I × R_SENSE)
     float    r_wire;        // Ω calculated
     float    contraction;   // % shortening from relaxed (positive = shorter)
 } MW_Sample_t;
@@ -154,13 +163,13 @@ void    MW_Init(void);
 void    MW_SetPWM(uint8_t percent);         // 0 – MW_PWM_MAX_PCT (clamped)
 uint8_t MW_GetPWM(void);
 
-// Live readings from the shared ADC DMA buffer.
-// R_wire and contraction are only meaningful during the OFF phase.
+// Live readings derived from adc_latch (updated by MW_SampleR every 100 ms).
+// R_wire and contraction require ON-phase sampling to be meaningful.
 float   MW_GetVsupply_mv(void);
-float   MW_GetVnode_mv(void);
+float   MW_GetVsense_mv(void);      // mV across inline sense resistor (≈ I × 1 Ω)
 float   MW_GetResistance(void);
 float   MW_GetContraction(void);
-bool    MW_IsOffPhase(void);
+bool    MW_IsOnPhase(void);         // true while CNT < CCR2 (FET conducting)
 
 // Profile (call MW_ProfileTick from HAL_SYSTICK_Callback)
 void               MW_StartProfile(uint8_t duty_pct);
@@ -172,8 +181,6 @@ void               MW_DumpProfile(void);    // CSV to CLI output
 // HTTP live feed — self-rescheduling action; started automatically by MW_Init().
 // Pushes one {"live":[Vsup_V, R_wire_ohm, PWM_pct]} frame to any browser
 // client subscribed to /mw_stream.  Runs at 5 Hz (every 200 ms).
-// Register as namedAction in your init file if you need to reference it
-// from a different translation unit; MW_Init() already does this.
 void    MW_HttpFeed(void);
 
 // Self-calibration — driven by MW_CalTick() at 200 ms intervals.
@@ -184,7 +191,7 @@ bool           MW_IsCalValid(void);
 float          MW_GetCalRmax(void);
 float          MW_GetCalRmin(void);
 void           MW_CalTick(void);            // self-rescheduling; started by MW_CLI_Calibrate
-void           MW_SampleR(void);            // 100 ms self-rescheduling: convert raw latch → adc_latch, re-arm CC4
+void           MW_SampleR(void);            // 100 ms self-rescheduling: take ON-phase sample
 void           MW_TIM3_IRQHandler(void);    // call from TIM3_IRQHandler in stm32f4xx_it.c
 
 // CLI handlers — bind via discoverywords.txt

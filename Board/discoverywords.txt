@@ -64,6 +64,10 @@ Words // system
 	pins			gpio_dump_all	// show all pins and states
 End
 
+Words // test
+	pf				print_float		// ( f n ) print float value with n decimal places
+End
+
 Include ../../TimbreOS/WordLists/clibindings.txt
 Include ../../TimbreOS/WordLists/floatwords.txt
 

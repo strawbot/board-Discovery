@@ -168,6 +168,7 @@ void help(void) {
     printif("or    ( n m - p ) bitwise OR top two data stack items and leave on top\n");
     printif("over   ( n m - n m n ) copy 2nd data stack item to top of data stack\n");
     printif("pa   print actions in queue\n");
+    printif("pf   ( f n ) print float value with n decimal places\n");
     printif("pi   ( - f ) return 32 bit value for pi\n");
     printif("pins   show all pins and states\n");
     printif("play   play out events in event queue and restart recording\n");

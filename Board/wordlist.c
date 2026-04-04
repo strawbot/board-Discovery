@@ -53,6 +53,7 @@ NAMES(wordnames)
 	NAME("reboot")		//  reboot the device via NVIC system reset
 	NAME("show-cli")		//  display cli status
 	NAME("pins")		//  show all pins and states
+	NAME("pf")		//  ( f n ) print float value with n decimal places
 	NAME("help")		//  <filtering> print words with one line help; allow wild card <filtering>; parenthesis show ( args - results ) and precede the command; angle brackets show arguments that follow commands
 	NAME("words")		//  list all words in dictionary
 	NAME("dup")		//  ( n - n n ) make a copy of the top data stack item
@@ -211,6 +212,7 @@ void show_timers(void);
 void do_reboot(void);
 void show_cli(void);
 void gpio_dump_all(void);
+void print_float(void);
 void help(void);
 void words(void);
 void dup(void);
@@ -369,6 +371,7 @@ BODIES(wordbodies)
 	BODY(do_reboot)
 	BODY(show_cli)
 	BODY(gpio_dump_all)
+	BODY(print_float)
 	BODY(help)
 	BODY(words)
 	BODY(dup)

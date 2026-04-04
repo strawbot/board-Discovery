@@ -116,6 +116,7 @@ oct   switch to octal numbers
 or    ( n m - p ) bitwise OR top two data stack items and leave on top
 over   ( n m - n m n ) copy 2nd data stack item to top of data stack
 pa   print actions in queue
+pf   ( f n ) print float value with n decimal places
 pi   ( - f ) return 32 bit value for pi
 pins   show all pins and states
 play   play out events in event queue and restart recording

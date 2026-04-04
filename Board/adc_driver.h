@@ -150,32 +150,35 @@ void ADC_GetLastRaw(uint16_t *in3_out, uint16_t *in8_out);
 float ADC_GetVDDA_mv(void);
 
 /* -------------------------------------------------------------------------
- * Dual regular simultaneous single-shot  (ADC1 master IN3, ADC2 slave IN8)
+ * Dual regular simultaneous sampling  (ADC1 master IN3, ADC2 slave IN8)
  *
  * Both channels are captured at exactly the same instant so that supply-
- * rail noise common to vsup and vnode cancels in the R_wire ratio:
+ * rail noise common to vsup and vsense cancels in the R_wire ratio:
  *
- *   R_wire = R_sense × (vsup − vnode) / vnode
- *          = R_sense × (k·V_dc + k·v_noise − k·V_dc − k·v_noise) / ...
- *                              ^^ noise cancels when sampled together ^^
+ *   R_wire = R_sense × (vsup − vsense) / vsense
+ *          ← vsup and vsense share the same noise phase when co-sampled,
+ *            so the noise cancels in the ratio.
  *
- * One simultaneous pair takes ~1.5 µs  (3 sample + 12 convert = 15 ADC
- * clock cycles at 21 MHz).  No DMA; results are read directly from CDR.
+ * Sampling time: 28 ADC clock cycles per channel.
+ *   28-cycle sample + 12.5-cycle convert = 40.5 cycles @ 21 MHz ≈ 1.93 µs
+ *   per simultaneous pair.
  *
- * Usage:
- *   ADC_SimInit();             // once, from MW_Init()
- *   ADC_SimTrigger();          // arm one conversion pair
- *   while (!ADC_SimReady()) {} // wait ~1.5 µs
- *   ADC_SimRead(&vsup, &vnode);
+ * Preferred usage (muscle-wire measurement path):
+ *   ADC_SimInit();                              // once, from MW_Init()
+ *   ADC_SimBurstRead(&vsup, &vsense, 4);        // 4 pairs ≈ 7.7 µs, averaged
  *
- * Calling context:  ADC_SimTrigger / ADC_SimReady / ADC_SimRead may be
- * called from ISR or main-loop context.
+ * Low-level primitives (single-pair, e.g. ADC_Driver_Update):
+ *   ADC_SimTrigger();
+ *   while (!ADC_SimReady()) {}
+ *   ADC_SimRead(&vsup, &vsense);
  *
- * Conflict with ADC_Driver_Update():  ADC_Driver_Update() temporarily
- * points ADC1 rank-1 at VREFINT/TEMP/VBAT for its internal-channel reads.
- * ADC_SimTrigger() re-sets rank-1 to IN3 before each trigger, so there is
- * no persistent conflict.  Do not call ADC_SimTrigger while a Driver_Update
- * is blocking inside read_internal_channels().
+ * Overrun (OVR) note:  ADC_Driver_Update() calls read_internal_channels()
+ * which fires ADC1 SWSTART three times.  Each fires ADC2 as the slave too
+ * (dual mode), but ADC2→DR is never read between those triggers, setting
+ * OVR.  RM0090 §13.3.5: when OVR is set, EOC is not asserted.
+ * ADC_Driver_Update() drains ADC2→DR and clears OVR after
+ * read_internal_channels().  ADC_SimBurstRead() and ADC_SimTrigger() also
+ * clear OVR defensively before each new burst/trigger.
  * ---------------------------------------------------------------------- */
 
 /** @brief  Configure ADC1+ADC2 for dual regular simultaneous mode.
@@ -183,22 +186,36 @@ float ADC_GetVDDA_mv(void);
 void ADC_SimInit(void);
 
 /** @brief  Arm one simultaneous conversion of IN3 (ADC1) and IN8 (ADC2).
- *          Re-sets ADC1 rank-1 to IN3 so a preceding Driver_Update cannot
- *          leave a stale channel assignment. */
+ *          Re-sets ADC1 rank-1 to IN3, clears stale EOC and OVR flags. */
 void ADC_SimTrigger(void);
 
 /** @brief  Return true when both ADC1 (master) and ADC2 (slave) EOC flags
  *          are set, indicating the simultaneous conversion has completed. */
 bool ADC_SimReady(void);
 
-/** @brief  Read results after ADC_SimReady() returns true.
+/** @brief  Read one pair after ADC_SimReady() returns true.
  *
- *  Reads ADC1->DR (vsup) and ADC2->DR (vnode) directly.  Reading each DR
- *  also clears its EOC flag, readying the pair for the next ADC_SimTrigger.
+ *  Reads ADC1->DR (vsup) and ADC2->DR (vsense) directly.  Each DR read
+ *  clears its EOC flag, readying the ADC for the next trigger.
  *
- *  @param[out] raw_vsup   12-bit ADC1 result for IN3 (PA3, supply sense).
- *  @param[out] raw_vnode  12-bit ADC2 result for IN8 (PB0, node sense). */
-void ADC_SimRead(uint16_t *raw_vsup, uint16_t *raw_vnode);
+ *  @param[out] raw_vsup   12-bit ADC1 result — IN3 (PA3, supply divider).
+ *  @param[out] raw_vsense 12-bit ADC2 result — IN8 (PB0, sense resistor). */
+void ADC_SimRead(uint16_t *raw_vsup, uint16_t *raw_vsense);
+
+/** @brief  Take N simultaneous pairs back-to-back and return the average.
+ *
+ *  Combines rank setup, OVR clear, N × (trigger → wait → read DR), and
+ *  averaging into a single blocking call.  Replaces the
+ *  ADC_SimTrigger / ADC_SimReady / ADC_SimRead triple for callers that
+ *  want oversampled results.
+ *
+ *  Blocking time: N × ~1.93 µs (28-cycle sample time @ 21 MHz ADC clock).
+ *  Safe to call from ISR context for small N (e.g. N=4 → ~7.7 µs).
+ *
+ *  @param[out] raw_vsup    Averaged 12-bit result for IN3  (supply divider).
+ *  @param[out] raw_vsense  Averaged 12-bit result for IN8  (sense resistor).
+ *  @param[in]  n           Number of pairs to accumulate (1–16). */
+void ADC_SimBurstRead(volatile uint16_t *raw_vsup, volatile uint16_t *raw_vsense, uint8_t n);
 
 #ifdef __cplusplus
 }

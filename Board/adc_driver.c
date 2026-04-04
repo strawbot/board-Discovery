@@ -399,18 +399,15 @@ static void read_internal_channels(uint16_t *temp_raw,
 void ADC_Driver_Update(ADC_Results_t *results)
 {
     /* ------------------------------------------------------------------
-     * Step 1: simultaneous single-shot for IN3 (vsup) and IN8 (vnode).
+     * Step 1: simultaneous single-shot for IN3 (vsup) and IN8 (vsense).
      *
-     * The ADC2 continuous DMA scan was retired by ADC_SimInit(); the dual
-     * regular simultaneous path gives truly co-phased samples so that
-     * supply-rail noise cancels in the R_wire ratio.
+     * ADC_SimBurstRead with n=1 gives one averaged pair.  Using the burst
+     * entry point (rather than the ADC_SimTrigger/Ready/Read triple) also
+     * handles ADC1 rank restore and ADC2 OVR clear in one call.
      *
-     * IN9 and IN12 are not used by any current consumers; zero them so
-     * the result struct is fully initialised.
+     * IN9 and IN12 are not used; zero them so the struct is fully init'd.
      * ---------------------------------------------------------------- */
-    ADC_SimTrigger();
-    while (!ADC_SimReady()) {}
-    ADC_SimRead(&results->raw[ADC_IDX_IN3], &results->raw[ADC_IDX_IN8]);
+    ADC_SimBurstRead(&results->raw[ADC_IDX_IN3], &results->raw[ADC_IDX_IN8], 1u);
     results->raw[ADC_IDX_IN9]  = 0U;
     results->raw[ADC_IDX_IN12] = 0U;
 
@@ -611,15 +608,18 @@ void ADC_SimInit(void)
     ADC123_COMMON->CCR = (ADC123_COMMON->CCR & ~ADC_CCR_MULTI_Msk)
                        | (0x06U << ADC_CCR_MULTI_Pos);
 
-    /* ── ADC1: master — rank-1 → IN3 (PA3), 3-cycle sample ─────────────────
+    /* ── ADC1: master — rank-1 → IN3 (PA3), 28-cycle sample ───────────────
      * All other ADC1 settings (resolution, alignment, SW trigger, single-
      * shot, no DMA, scan-disable) were established by adc1_init() and are
      * unchanged.  Only the rank assignment and sample time for the external
-     * channel need adding.                                                  */
-    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_3, LL_ADC_SAMPLINGTIME_3CYCLES);
+     * channel need adding.
+     * 28 cycles @ 21 MHz = 1.33 µs sample + 0.60 µs convert = 1.93 µs/pair.
+     * Source impedance for IN3 (supply divider, 16.7 kΩ Thevenin) needs
+     * ≥ 5 × RC = 5 × 16.7 kΩ × 4 pF ≈ 334 ns; 28 cycles = 1330 ns >> OK. */
+    LL_ADC_SetChannelSamplingTime(ADC1, LL_ADC_CHANNEL_3, LL_ADC_SAMPLINGTIME_28CYCLES);
     LL_ADC_REG_SetSequencerRanks (ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
 
-    /* ── ADC2: slave — rank-1 → IN8 (PB0), 3-cycle, single-shot, no DMA ───
+    /* ── ADC2: slave — rank-1 → IN8 (PB0), 28-cycle, single-shot, no DMA ──
      * In regular simultaneous mode ADC2 follows ADC1's trigger.  Its own
      * trigger-source and continuous-mode settings are irrelevant to hardware
      * but are configured consistently for clarity.                          */
@@ -630,7 +630,7 @@ void ADC_SimInit(void)
     LL_ADC_REG_SetContinuousMode  (ADC2, LL_ADC_REG_CONV_SINGLE);
     LL_ADC_REG_SetSequencerLength (ADC2, LL_ADC_REG_SEQ_SCAN_DISABLE);
     LL_ADC_REG_SetSequencerRanks  (ADC2, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_8);
-    LL_ADC_SetChannelSamplingTime (ADC2, LL_ADC_CHANNEL_8, LL_ADC_SAMPLINGTIME_3CYCLES);
+    LL_ADC_SetChannelSamplingTime (ADC2, LL_ADC_CHANNEL_8, LL_ADC_SAMPLINGTIME_28CYCLES);
     LL_ADC_REG_SetDMATransfer     (ADC2, LL_ADC_REG_DMA_TRANSFER_NONE);
 
     /* ── Re-enable both ADCs ────────────────────────────────────────────────
@@ -677,7 +677,7 @@ bool ADC_SimReady(void)
            (LL_ADC_IsActiveFlag_EOCS(ADC2) != 0U);
 }
 
-void ADC_SimRead(uint16_t *raw_vsup, uint16_t *raw_vnode)
+void ADC_SimRead(uint16_t *raw_vsup, uint16_t *raw_vsense)
 {
     /* Read individual DR registers rather than CDR.
      *
@@ -687,10 +687,62 @@ void ADC_SimRead(uint16_t *raw_vsup, uint16_t *raw_vnode)
      * naturally clears the EOC flag of each ADC for the next trigger.
      *
      *   ADC1->DR = master = IN3 (PA3) = vsup
-     *   ADC2->DR = slave  = IN8 (PB0) = vnode
+     *   ADC2->DR = slave  = IN8 (PB0) = vsense
      */
-    *raw_vsup  = (uint16_t)(ADC1->DR & 0x0FFFu);
-    *raw_vnode = (uint16_t)(ADC2->DR & 0x0FFFu);
+    *raw_vsup   = (uint16_t)(ADC1->DR & 0x0FFFu);
+    *raw_vsense = (uint16_t)(ADC2->DR & 0x0FFFu);
+}
+
+/* =========================================================================
+ * ADC_SimBurstRead — N simultaneous pairs, averaged
+ *
+ * Preferred entry point for muscle-wire resistance sampling.  Combines:
+ *   • ADC1 rank-1 → IN3 restore (undoes any internal-channel reassignment)
+ *   • ADC2 OVR clear (fixes hang from read_internal_channels() piggyback)
+ *   • N × (trigger → wait for both EOC → read both DR)
+ *   • Integer average of N pairs for each channel
+ *
+ * Because both DRs are read on every iteration, OVR cannot accumulate
+ * within the burst — each DR is always consumed before the next trigger.
+ *
+ * Blocking time: N × 1.93 µs (28-cycle sample @ 21 MHz).
+ *   N=4 → 7.7 µs.  Safe in ISR context at the expected call rate.
+ * ====================================================================== */
+
+void ADC_SimBurstRead(volatile uint16_t *raw_vsup, volatile uint16_t *raw_vsense, uint8_t n)
+{
+    /* Restore ADC1 rank-1 → IN3 in case a preceding Driver_Update left it
+     * pointing at an internal channel (TEMP / VREFINT / VBAT).            */
+    LL_ADC_REG_SetSequencerRanks(ADC1, LL_ADC_REG_RANK_1, LL_ADC_CHANNEL_3);
+
+    /* Clear any OVR that accumulated on ADC2 during read_internal_channels().
+     * With OVR set, ADC2 does not update DR or set EOC (RM0090 §13.3.5).  */
+    LL_ADC_ClearFlag_OVR(ADC2);
+
+    uint32_t sum0 = 0u;
+    uint32_t sum1 = 0u;
+
+    for (uint8_t i = 0u; i < n; i++)
+    {
+        /* Clear both EOC flags before arming the next trigger.             */
+        LL_ADC_ClearFlag_EOCS(ADC1);
+        LL_ADC_ClearFlag_EOCS(ADC2);
+
+        /* Fire: ADC1 SW-start triggers ADC2 simultaneously (slave mode).  */
+        LL_ADC_REG_StartConversionSWStart(ADC1);
+
+        /* Spin until both master and slave have set EOC.                   */
+        while (!(LL_ADC_IsActiveFlag_EOCS(ADC1) &&
+                 LL_ADC_IsActiveFlag_EOCS(ADC2))) {}
+
+        /* Reading each DR clears its EOC flag, preventing OVR on the next
+         * iteration.                                                        */
+        sum0 += ADC1->DR & 0x0FFFu;
+        sum1 += ADC2->DR & 0x0FFFu;
+    }
+
+    *raw_vsup   = (uint16_t)(sum0 / (uint32_t)n);
+    *raw_vsense = (uint16_t)(sum1 / (uint32_t)n);
 }
 
 /* =========================================================================
