@@ -63,7 +63,7 @@ static float iir_vsense_mv = 0.0f;
 
 // ── Closed-loop controller state ──────────────────────────────────────────────
 static float cl_target_pct = -1.0f;    // < 0 = disabled
-static float cl_integral   =  0.0f;
+static float cl_prev_pct   =  0.0f;    // previous contraction reading for rate term
 
 // ── Calibration state ─────────────────────────────────────────────────────────
 static MW_CalState_t  cal_state   = MW_CAL_IDLE;
@@ -929,22 +929,25 @@ void MW_CLI_ShowCal(void)
 // ═════════════════════════════════════════════════════════════════════════════
 // Closed-loop contraction controller
 //
-// PI controller: every CL_PERIOD_MS ms the tick samples the current contraction,
-// computes an error against the target, and adjusts PWM accordingly.
+// Fuzzy rule-based controller: every CL_PERIOD_MS ms the tick samples the
+// current contraction and applies one of five fixed PWM levels based on the
+// magnitude and direction of the error, modulated by the rate of change.
 //
-// Three non-linearities are handled explicitly:
+// Rules summary (error = target − measured):
 //
-//   1. Deadband  — no action within ±CL_DEADBAND_PCT of target; integral
-//                  is zeroed here to prevent windup at rest.
+//   error > FZ_LARGE_ERR           → FZ_HIGH_PWM (heat hard)
+//   error > FZ_SMALL_ERR           → FZ_MED_PWM, or FZ_HOLD_PWM if rate fast
+//   error > FZ_DEAD_PCT            → FZ_LOW_PWM,  or FZ_HOLD_PWM if rate fast
+//   |error| ≤ FZ_DEAD_PCT          → FZ_HOLD_PWM (maintenance current)
+//   error < −FZ_LARGE_ERR          → 0% (cut power, let cool)
+//   error < −FZ_DEAD_PCT           → 0%, or FZ_HOLD_PWM if already cooling
 //
-//   2. Gain scheduling — Kp is scaled down in the low-contraction (wire cold,
-//                  sluggish response) and high-contraction (near thermal limit)
-//                  regions to reduce overshoot and thermal stress.
+// The rate term (current − previous reading) provides anticipatory damping:
+// when the wire is already contracting fast toward the target, PWM is held
+// at maintenance level rather than adding more heat, preventing overshoot.
 //
-//   3. Asymmetric cooling — if the wire overshoots the target by more than
-//                  CL_FAST_COOL_THRESH %, PWM is zeroed immediately.  Cooling
-//                  is passive so gradual reduction is pointless; zeroing lets
-//                  the wire cool as fast as physics allows.
+// No integral term: the wide deadband (FZ_DEAD_PCT >> noise floor) means
+// steady-state offset is acceptable and windup is avoided entirely.
 //
 // The loop is disabled automatically when setpwm or cal-wire takes control.
 // ═════════════════════════════════════════════════════════════════════════════
@@ -954,14 +957,14 @@ void MW_SetTarget(float pct)
     if (pct < 0.0f)
     {
         cl_target_pct = -1.0f;
-        cl_integral   =  0.0f;
+        cl_prev_pct   =  0.0f;
         return;
     }
     if (pct > 100.0f) pct = 100.0f;
 
     bool was_off  = (cl_target_pct < 0.0f);
     cl_target_pct = pct;
-    cl_integral   = 0.0f;    // reset integral on every new target
+    cl_prev_pct   = 0.0f;    // reset rate history on every new target
 
     if (was_off)
         after(msec(CL_PERIOD_MS), MW_CLTick);   // start the tick chain
@@ -970,55 +973,44 @@ void MW_SetTarget(float pct)
 float MW_GetTarget(void)     { return cl_target_pct; }
 bool  MW_IsClosedLoop(void)  { return cl_target_pct >= 0.0f; }
 
-// ── MW_CLTick — 500 ms self-rescheduling PI control step ──────────────────
+// ── MW_CLTick — 500 ms self-rescheduling fuzzy control step ──────────────
 void MW_CLTick(void)
 {
     if (cl_target_pct < 0.0f) return;   // disabled — do not reschedule
 
     float measured = MW_GetContraction();
     float error    = cl_target_pct - measured;
+    float rate     = measured - cl_prev_pct;   // +ve = already contracting toward target
+    cl_prev_pct    = measured;
 
-    // ── 1. Deadband: hold current PWM when close enough ──────────────────
-    if (fabsf(error) <= CL_DEADBAND_PCT)
-    {
-        cl_integral = 0.0f;             // bleed off integral at rest
-        after(msec(CL_PERIOD_MS), MW_CLTick);
-        return;
+    uint8_t new_pwm;
+
+    if (error > FZ_LARGE_ERR) {
+        /* Far below target — heat hard regardless of rate */
+        new_pwm = FZ_HIGH_PWM;
+    }
+    else if (error > FZ_SMALL_ERR) {
+        /* Moderately below — heat, but ease off if already converging fast */
+        new_pwm = (rate > FZ_RATE_THRESH) ? FZ_HOLD_PWM : FZ_MED_PWM;
+    }
+    else if (error > FZ_DEAD_PCT) {
+        /* Slightly below — gentle heat unless wire is already moving in */
+        new_pwm = (rate > FZ_RATE_THRESH) ? FZ_HOLD_PWM : FZ_LOW_PWM;
+    }
+    else if (error >= -FZ_DEAD_PCT) {
+        /* Inside deadband — maintenance current holds temperature */
+        new_pwm = FZ_HOLD_PWM;
+    }
+    else if (error > -FZ_LARGE_ERR) {
+        /* Above target — cut heat; hold if already cooling on its own */
+        new_pwm = (rate < -FZ_RATE_THRESH) ? FZ_HOLD_PWM : 0u;
+    }
+    else {
+        /* Far above target — cut power, let wire cool naturally */
+        new_pwm = 0u;
     }
 
-    // ── 2. Asymmetric cooling: big overshoot → kill power, let wire cool ─
-    if (error < -CL_FAST_COOL_THRESH)
-    {
-        MW_SetPWM(0);
-        cl_integral = 0.0f;
-        after(msec(CL_PERIOD_MS), MW_CLTick);
-        return;
-    }
-
-    // ── 3. Gain scheduling: reduce Kp at the extremes ────────────────────
-    float kp_scale = (cl_target_pct < CL_LOW_THRESHOLD ||
-                      cl_target_pct > CL_HIGH_THRESHOLD)
-                     ? CL_EDGE_GAIN : 1.0f;
-
-    // ── 4. PI update ──────────────────────────────────────────────────────
-    cl_integral += error;
-
-    // Anti-windup: clamp so the integral's PWM contribution stays ≤ CL_I_LIMIT
-    float i_limit = CL_I_LIMIT / (CL_KI > 0.0f ? CL_KI : 1.0f);
-    if (cl_integral >  i_limit) cl_integral =  i_limit;
-    if (cl_integral < -i_limit) cl_integral = -i_limit;
-
-    float adjustment = CL_KP * kp_scale * error + CL_KI * cl_integral;
-
-    // Apply delta to current PWM; clamp to valid range
-    int32_t new_pwm = (int32_t)pwm_pct
-                    + (int32_t)(adjustment >= 0.0f
-                                ? adjustment + 0.5f
-                                : adjustment - 0.5f);
-    if (new_pwm < 0)                       new_pwm = 0;
-    if (new_pwm > (int32_t)MW_PWM_MAX_PCT) new_pwm = (int32_t)MW_PWM_MAX_PCT;
-
-    MW_SetPWM((uint8_t)new_pwm);
+    MW_SetPWM(new_pwm);
     after(msec(CL_PERIOD_MS), MW_CLTick);
 }
 
@@ -1069,22 +1061,18 @@ void MW_CLI_ShowCL(void)
         {
             if (error >= 0.0f) print("+");
             printFloat(error, 1); tabTo(COL_UNIT); print("%");
-            if (fabsf(error) <= CL_DEADBAND_PCT) print("  (in band)");
+            if (error >= -FZ_DEAD_PCT && error <= FZ_DEAD_PCT) print("  (in band)");
         }
         else { print("--"); }
         printCr();
 
-        print("integral"); tabTo(COL_VALUE);
-        printFloat(cl_integral, 1); printCr();
+        float rate = measured - cl_prev_pct;
+        print("rate");     tabTo(COL_VALUE);
+        if (rate >= 0.0f) print("+");
+        printFloat(rate, 1); tabTo(COL_UNIT); print("%/tick"); printCr();
 
         print("PWM");      tabTo(COL_VALUE);
         printDec(pwm_pct); print("%"); printCr();
-
-        print("region");   tabTo(COL_VALUE);
-        if      (cl_target_pct < CL_LOW_THRESHOLD)  print("low  (reduced gain)");
-        else if (cl_target_pct > CL_HIGH_THRESHOLD) print("high (reduced gain)");
-        else                                         print("mid");
-        printCr();
     }
 
     print("---"); printCr();

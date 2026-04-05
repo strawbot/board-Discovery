@@ -128,45 +128,42 @@
 #define CAL_TIMEOUT_MS      25000u      // ms before aborting a sampling phase
 
 // ── Closed-loop contraction controller ───────────────────────────────────────
-// PI controller driving PWM to hold a target contraction percentage.
+// Fuzzy rule-based controller driving PWM to hold a target contraction %.
 // MW_CLTick() self-reschedules at CL_PERIOD_MS; started by MW_SetTarget().
-// Calling MW_SetTarget(-1) or MW_CLI_SetPWM() disables the loop.
+// Calling MW_SetTarget(-1) or setpwm / cal-wire disables the loop.
 //
-// Gain scheduling
-// ───────────────
-//   Three operating regions trade responsiveness vs. stability:
-//     Low  (0 – CL_LOW_THRESHOLD  %): wire is cold, response is slow.
-//                                     Reduced Kp avoids overshoot.
-//     Mid  (CL_LOW_THRESHOLD – CL_HIGH_THRESHOLD): full gain.
-//     High (CL_HIGH_THRESHOLD – 100 %): near thermal ceiling.
-//                                       Reduced Kp protects the wire.
+// Design rationale
+// ────────────────
+//   With a 1.2 Ω span, 1 % contraction = 0.012 Ω.  ADC noise is ~0.1–0.2 Ω,
+//   which maps to ±8–16 % contraction noise.  A PI controller with a tight
+//   deadband fights that noise continuously and oscillates.  Instead, the
+//   fuzzy rules use a deadband wider than the noise floor, absolute PWM
+//   levels rather than incremental deltas, and a rate term (current minus
+//   previous reading) to anticipate overshoot before it occurs.
 //
-// Hysteresis / deadband
-// ─────────────────────
-//   No PWM change when |error| ≤ CL_DEADBAND_PCT.
-//   Integral is zeroed inside the band to prevent windup at rest.
-//
-// Asymmetric cooling
-// ──────────────────
-//   When the wire overshoots by more than CL_FAST_COOL_THRESH %,
-//   PWM is zeroed immediately — cooling is passive, so there is no
-//   point gradually reducing power.
+// Operating regions
+// ─────────────────
+//   |error| > FZ_LARGE_ERR  : heat hard / cut power hard
+//   FZ_SMALL_ERR < |error| ≤ FZ_LARGE_ERR : moderate action; rate modulates
+//   FZ_DEAD_PCT  < |error| ≤ FZ_SMALL_ERR : gentle action; rate modulates
+//   |error| ≤ FZ_DEAD_PCT   : deadband — maintenance current only
 //
 // Tuning notes
 // ────────────
-//   Increase CL_KP  for faster approach (risk: oscillation).
-//   Increase CL_KI  for tighter steady-state (risk: slow windup).
-//   Decrease CL_DEADBAND_PCT for tighter hold (risk: hunting).
-//   Increase CL_PERIOD_MS for slower/gentler updates.
-#define CL_PERIOD_MS         500u    // control update interval
-#define CL_DEADBAND_PCT      2.0f    // ±% — no PWM change inside this band
-#define CL_KP                0.1f    // proportional gain: PWM% per contraction% error
-#define CL_KI                0.03f   // integral gain per tick (500 ms)
-#define CL_I_LIMIT           20.0f   // anti-windup: max integral PWM contribution (%)
-#define CL_LOW_THRESHOLD     20.0f   // below this % contraction: reduced gain
-#define CL_HIGH_THRESHOLD    80.0f   // above this % contraction: reduced gain
-#define CL_EDGE_GAIN         0.4f    // Kp multiplier applied in edge regions
-#define CL_FAST_COOL_THRESH  15.0f   // overshoot > this % → zero PWM immediately
+//   FZ_HOLD_PWM  is the key knob: raise it if the wire slowly relaxes at
+//                target; lower it if it slowly over-contracts.
+//   FZ_DEAD_PCT  must exceed the measurement noise floor (≈ ±8 %).
+//   FZ_LARGE_ERR / FZ_SMALL_ERR set the transition boundaries.
+//   FZ_RATE_THRESH controls how aggressively the anticipatory term fires.
+#define CL_PERIOD_MS         500u    // control update interval (ms)
+#define FZ_DEAD_PCT          8.0f    // ±% deadband — sized to exceed noise floor
+#define FZ_SMALL_ERR        12.0f    // small/medium error boundary (%)
+#define FZ_LARGE_ERR        25.0f    // medium/large error boundary (%)
+#define FZ_HIGH_PWM         75u      // PWM% applied for large positive error
+#define FZ_MED_PWM          45u      // PWM% applied for medium positive error
+#define FZ_LOW_PWM          25u      // PWM% applied for small positive error
+#define FZ_HOLD_PWM         18u      // maintenance PWM in/near deadband
+#define FZ_RATE_THRESH       4.0f    // %/tick rate that triggers anticipation
 
 typedef enum {
     MW_CAL_IDLE        = 0,
