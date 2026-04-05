@@ -128,33 +128,41 @@
 #define CAL_TIMEOUT_MS      25000u      // ms before aborting a sampling phase
 
 // ── Closed-loop contraction controller ───────────────────────────────────────
-// Fuzzy rule-based controller driving PWM to hold a target contraction %.
-// MW_CLTick() self-reschedules at CL_PERIOD_MS; started by MW_SetTarget().
+// Fuzzy controller with piecewise-linear interpolation driving PWM to hold
+// a target contraction %.  MW_CLTick() self-reschedules at CL_PERIOD_MS.
 // Calling MW_SetTarget(-1) or setpwm / cal-wire disables the loop.
 //
 // Design rationale
 // ────────────────
-//   With a 1.2 Ω span, 1 % contraction = 0.012 Ω.  ADC noise is ~0.1–0.2 Ω,
-//   which maps to ±8–16 % contraction noise.  A PI controller with a tight
-//   deadband fights that noise continuously and oscillates.  Instead, the
-//   fuzzy rules use a deadband wider than the noise floor, absolute PWM
-//   levels rather than incremental deltas, and a rate term (current minus
-//   previous reading) to anticipate overshoot before it occurs.
+//   With a 1.2 Ω span, 1 % contraction = 0.012 Ω.  Measurement noise maps
+//   to ±10–15 % contraction noise.  Output is computed by interpolating
+//   smoothly between control points rather than stepping between discrete
+//   levels — so small noise-driven error changes produce small PWM changes,
+//   not sudden cuts that let the spring snap the wire back.
 //
-// Operating regions
-// ─────────────────
-//   |error| > FZ_LARGE_ERR  : heat hard / cut power hard
-//   FZ_SMALL_ERR < |error| ≤ FZ_LARGE_ERR : moderate action; rate modulates
-//   FZ_DEAD_PCT  < |error| ≤ FZ_SMALL_ERR : gentle action; rate modulates
-//   |error| ≤ FZ_DEAD_PCT   : deadband — maintenance current only
+// Output mapping — piecewise linear interpolation
+// ────────────────────────────────────────────────
+//   Positive error (needs more contraction), heating ramp:
+//     0 → DEAD_PCT : flat at HOLD_PWM  (deadband)
+//     DEAD → SMALL : interpolate LOW_PWM → MED_PWM
+//     SMALL → LARGE: interpolate MED_PWM → HIGH_PWM
+//     > LARGE      : flat at HIGH_PWM
+//
+//   Negative error (above target), cooling ramp:
+//     0 → DEAD_PCT : flat at HOLD_PWM  (deadband)
+//     DEAD → SMALL : interpolate HOLD_PWM → SOFT_COOL_PWM
+//     SMALL → LARGE: interpolate SOFT_COOL_PWM → 0 %
+//     > LARGE      : flat at 0 %
+//
+//   Rate anticipation: proportional blend toward HOLD_PWM when wire is
+//   already moving fast toward target — damps overshoot without cutting off.
 //
 // Tuning notes
 // ────────────
-//   FZ_HOLD_PWM  is the key knob: raise it if the wire slowly relaxes at
-//                target; lower it if it slowly over-contracts.
-//   FZ_DEAD_PCT  must exceed the measurement noise floor (≈ ±8 %).
-//   FZ_LARGE_ERR / FZ_SMALL_ERR set the transition boundaries.
-//   FZ_RATE_THRESH controls how aggressively the anticipatory term fires.
+//   FZ_HOLD_PWM  is the key knob: raise it if the wire relaxes at target;
+//                lower it if it creeps up.
+//   FZ_SOFT_COOL_PWM must stay below the activation threshold (~15–18 %).
+//   FZ_DEAD_PCT  must exceed the measurement noise floor (≈ ±10–12 %).
 //
 // Tuning basis (from char-wire step-response data):
 //   15% PWM → no sustained contraction (below activation threshold)
@@ -179,6 +187,10 @@
 #define FZ_LOW_PWM           20u     // PWM% for small error — just above threshold
 #define FZ_HOLD_PWM          18u     // maintenance PWM — just above activation threshold
                                      // raise if wire relaxes at target; lower if it creeps up
+#define FZ_SOFT_COOL_PWM     10u     // sub-threshold cool — wire drifts back slowly, no spring snap
+                                     // used when slightly above target; prevents hard 0% cuts
+#define FZ_MIN_HOLD_TARGET   20.0f   // targets below this use 0% in the deadband — the spring
+                                     // returns the wire without help; avoids heating near zero
 #define FZ_RATE_THRESH      10.0f    // %/tick — fast initial rise is ~15–20%/tick
 
 // ── Wire characterisation profiler ───────────────────────────────────────────

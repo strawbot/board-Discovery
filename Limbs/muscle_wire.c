@@ -982,42 +982,81 @@ void MW_SetTarget(float pct)
 float MW_GetTarget(void)     { return cl_target_pct; }
 bool  MW_IsClosedLoop(void)  { return cl_target_pct >= 0.0f; }
 
-// ── MW_CLTick — 500 ms self-rescheduling fuzzy control step ──────────────
+// ── fz_lerp — linear interpolation clamped to [y0, y1] ──────────────────
+// Maps x in [x0, x1] to y in [y0, y1].  Returns y0 for x ≤ x0, y1 for x ≥ x1.
+static float fz_lerp(float x, float x0, float x1, float y0, float y1)
+{
+    if (x <= x0) return y0;
+    if (x >= x1) return y1;
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+}
+
+// ── MW_CLTick — 300 ms self-rescheduling fuzzy control step ──────────────
 void MW_CLTick(void)
 {
     if (cl_target_pct < 0.0f) return;   // disabled — do not reschedule
 
     float measured = MW_GetContraction();
     float error    = cl_target_pct - measured;
-    float rate     = measured - cl_prev_pct;   // +ve = already contracting toward target
-    cl_prev_pct    = measured;
 
-    uint8_t new_pwm;
+    // Only compute rate when both readings are valid (non-zero).
+    // Transitioning from invalid (0.0) to a real reading looks like a huge
+    // spike in rate — guard against it so the anticipation term stays clean.
+    float rate = (measured > 0.0f && cl_prev_pct > 0.0f)
+                 ? (measured - cl_prev_pct) : 0.0f;
+    cl_prev_pct = measured;
 
-    if (error > FZ_LARGE_ERR) {
-        /* Far below target — heat hard regardless of rate */
-        new_pwm = FZ_HIGH_PWM;
+    // Deadband PWM: below FZ_MIN_HOLD_TARGET the spring returns the wire
+    // without help — applying hold current would actively heat it past zero.
+    const float h  = (cl_target_pct >= FZ_MIN_HOLD_TARGET)
+                     ? (float)FZ_HOLD_PWM : 0.0f;  // 18 or 0
+    const float sc = (float)FZ_SOFT_COOL_PWM;  // 10 — sub-threshold drift
+    const float lo = (float)FZ_LOW_PWM;         // 20 — gentle heat
+    const float md = (float)FZ_MED_PWM;         // 25 — moderate heat
+    const float hi = (float)FZ_HIGH_PWM;        // 35 — full activation
+
+    float pwm_f;
+
+    if (error >= 0.0f) {
+        // ── Heating ramp: interpolate smoothly through control points ─────
+        if (error < FZ_DEAD_PCT) {
+            pwm_f = h;                                              // deadband
+        } else if (error < FZ_SMALL_ERR) {
+            pwm_f = fz_lerp(error, FZ_DEAD_PCT,  FZ_SMALL_ERR, lo, md);
+        } else if (error < FZ_LARGE_ERR) {
+            pwm_f = fz_lerp(error, FZ_SMALL_ERR, FZ_LARGE_ERR, md, hi);
+        } else {
+            pwm_f = hi;                                             // full heat
+        }
+
+        // Anticipatory damping: blend proportionally toward hold when
+        // wire is already moving fast in the right direction.
+        if (rate > FZ_RATE_THRESH) {
+            float blend = (rate - FZ_RATE_THRESH) / FZ_RATE_THRESH;
+            if (blend > 1.0f) blend = 1.0f;
+            pwm_f = pwm_f + (h - pwm_f) * blend;
+        }
+    } else {
+        // ── Cooling ramp: interpolate smoothly through control points ─────
+        float ae = -error;   // absolute overshoot, positive
+        if (ae < FZ_DEAD_PCT) {
+            pwm_f = h;                                              // deadband
+        } else if (ae < FZ_SMALL_ERR) {
+            pwm_f = fz_lerp(ae, FZ_DEAD_PCT,  FZ_SMALL_ERR, h, sc);
+            // If already cooling fast, don't reduce further
+            if (rate < -FZ_RATE_THRESH) pwm_f = h;
+        } else if (ae < FZ_LARGE_ERR) {
+            pwm_f = fz_lerp(ae, FZ_SMALL_ERR, FZ_LARGE_ERR, sc, 0.0f);
+            if (rate < -FZ_RATE_THRESH) pwm_f = sc;
+        } else {
+            pwm_f = 0.0f;                                           // cut power
+            if (rate < -FZ_RATE_THRESH) pwm_f = sc;
+        }
     }
-    else if (error > FZ_SMALL_ERR) {
-        /* Moderately below — heat, but ease off if already converging fast */
-        new_pwm = (rate > FZ_RATE_THRESH) ? FZ_HOLD_PWM : FZ_MED_PWM;
-    }
-    else if (error > FZ_DEAD_PCT) {
-        /* Slightly below — gentle heat unless wire is already moving in */
-        new_pwm = (rate > FZ_RATE_THRESH) ? FZ_HOLD_PWM : FZ_LOW_PWM;
-    }
-    else if (error >= -FZ_DEAD_PCT) {
-        /* Inside deadband — maintenance current holds temperature */
-        new_pwm = FZ_HOLD_PWM;
-    }
-    else if (error > -FZ_LARGE_ERR) {
-        /* Above target — cut heat; hold if already cooling on its own */
-        new_pwm = (rate < -FZ_RATE_THRESH) ? FZ_HOLD_PWM : 0u;
-    }
-    else {
-        /* Far above target — cut power, let wire cool naturally */
-        new_pwm = 0u;
-    }
+
+    // Round to nearest integer PWM; clamp to hardware ceiling
+    uint8_t new_pwm = (pwm_f >= 0.5f) ? (uint8_t)(pwm_f + 0.5f) : 0u;
+    if (new_pwm > MW_PWM_MAX_PCT) new_pwm = MW_PWM_MAX_PCT;
 
     MW_SetPWM(new_pwm);
     after(msec(CL_PERIOD_MS), MW_CLTick);
