@@ -108,6 +108,7 @@ void help(void) {
     printif("c@   ( a - c ) return contents of memory using top stack item as the address (8 bit)\n");
     printif("cal-wire   run two-point self-calibration: R_max at 0% then R_min at 70%\n");
     printif("cbrt   ( f - f  ) calculate the cube root of f\n");
+    printif("char-wire    ( n ) run 3-phase step-response test: pre-cool, heat at n%, cool to rest\n");
     printif("cl-off    disable closed-loop controller; PWM holds at last value\n");
     printif("cmove   ( s d n - ) move n bytes from s to d\n");
     printif("constant   ( n - ) <string> give n a name\n");
@@ -120,6 +121,7 @@ void help(void) {
     printif("decimals\n");
     printif("drop   ( n - ) throw away the top data stack item\n");
     printif("dump   ( a n - ) dump n 16-byte rows of memory starting at address a\n");
+    printif("dump-char    emit char-wire step-response data as CSV (paste into spreadsheet)\n");
     printif("dump-profile   emit captured profile as CSV to CLI output\n");
     printif("dup   ( n - n n ) make a copy of the top data stack item\n");
     printif("echooff   turn off key echo\n");
@@ -188,7 +190,7 @@ void help(void) {
     printif("show-ADC   show all adc inputs\n");
     printif("show-acc   show accelerometer type, orientation (pitch/roll) and tap count\n");
     printif("show-cal   show calibration state, R_max, R_min and measured travel span\n");
-    printif("show-cl    show closed-loop controller state: target, measured, error, integral, PWM, region\n");
+    printif("show-cl    show closed-loop controller state: target, measured, error, rate, PWM\n");
     printif("show-cli   display cli status\n");
     printif("show-dac   show DAC sine wave output: frequency, samples, timer registers\n");
     printif("show-dma   show DMA controller usage: active streams, channels, state, error flags\n");

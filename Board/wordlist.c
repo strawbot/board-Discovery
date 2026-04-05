@@ -43,8 +43,10 @@ NAMES(wordnames)
 	NAME("cal-wire")		//  run two-point self-calibration: R_max at 0% then R_min at 70%
 	NAME("show-cal")		//  show calibration state, R_max, R_min and measured travel span
 	NAME("set-per")		//   ( n ) set closed-loop contraction target to n percent (0-100) and enable controller
-	NAME("show-cl")		//   show closed-loop controller state: target, measured, error, integral, PWM, region
+	NAME("show-cl")		//   show closed-loop controller state: target, measured, error, rate, PWM
 	NAME("cl-off")		//   disable closed-loop controller; PWM holds at last value
+	NAME("char-wire")		//   ( n ) run 3-phase step-response test: pre-cool, heat at n%, cool to rest
+	NAME("dump-char")		//   emit char-wire step-response data as CSV (paste into spreadsheet)
 	NAME("show-dac")		//  show DAC sine wave output: frequency, samples, timer registers
 	NAME("dacon")		//  start sine wave on PA4
 	NAME("dacoff")		//  stop sine wave on PA4
@@ -207,6 +209,8 @@ void MW_CLI_ShowCal(void);
 void MW_CLI_SetPercent(void);
 void MW_CLI_ShowCL(void);
 void MW_CLI_CLOff(void);
+void MW_CLI_CharWire(void);
+void MW_CLI_DumpChar(void);
 void show_dac(void);
 void DAC_Sine_Start(void);
 void DAC_Sine_Stop(void);
@@ -369,6 +373,8 @@ BODIES(wordbodies)
 	BODY(MW_CLI_SetPercent)
 	BODY(MW_CLI_ShowCL)
 	BODY(MW_CLI_CLOff)
+	BODY(MW_CLI_CharWire)
+	BODY(MW_CLI_DumpChar)
 	BODY(show_dac)
 	BODY(DAC_Sine_Start)
 	BODY(DAC_Sine_Stop)

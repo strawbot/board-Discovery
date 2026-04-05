@@ -43,8 +43,10 @@ Words // PWM / muscle wire
 	cal-wire		MW_CLI_Calibrate    // run two-point self-calibration: R_max at 0% then R_min at 70%
 	show-cal		MW_CLI_ShowCal      // show calibration state, R_max, R_min and measured travel span
 	set-per			MW_CLI_SetPercent	//  ( n ) set closed-loop contraction target to n percent (0-100) and enable controller
-	show-cl			MW_CLI_ShowCL		//  show closed-loop controller state: target, measured, error, integral, PWM, region
+	show-cl			MW_CLI_ShowCL		//  show closed-loop controller state: target, measured, error, rate, PWM
 	cl-off			MW_CLI_CLOff		//  disable closed-loop controller; PWM holds at last value
+	char-wire		MW_CLI_CharWire		//  ( n ) run 3-phase step-response test: pre-cool, heat at n%, cool to rest
+	dump-char		MW_CLI_DumpChar		//  emit char-wire step-response data as CSV (paste into spreadsheet)
 End
 
 Words // DAC

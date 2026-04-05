@@ -65,6 +65,17 @@ static float iir_vsense_mv = 0.0f;
 static float cl_target_pct = -1.0f;    // < 0 = disabled
 static float cl_prev_pct   =  0.0f;    // previous contraction reading for rate term
 
+// ── Characterisation profiler state ───────────────────────────────────────────
+static MW_CharState_t   char_state     = MW_CHAR_IDLE;
+static MW_CharSample_t  char_buf[CHAR_MAX_SAMPLES];
+static uint32_t         char_count     = 0;
+static uint32_t         char_start_ms  = 0;
+static uint8_t          char_pwm       = 0;
+static uint32_t         char_phase_ms  = 0;
+static float            char_stab[CHAR_STABLE_COUNT];
+static uint8_t          char_stab_idx  = 0;
+static uint8_t          char_stab_cnt  = 0;
+
 // ── Calibration state ─────────────────────────────────────────────────────────
 static MW_CalState_t  cal_state   = MW_CAL_IDLE;
 static float          cal_r_max   = MW_R_WIRE_RELAXED;     // updated by cal-wire
@@ -153,6 +164,10 @@ void MW_Init(void)
     // Register closed-loop tick so the scheduler can find it by name.
     // MW_SetTarget() starts it; it stops itself when disabled.
     namedAction(MW_CLTick);
+
+    // Register characterisation tick so the scheduler can find it by name.
+    // MW_CLI_CharWire() starts it; it stops itself when done.
+    namedAction(MW_CharTick);
 
     // ── Initial VDDA calibration ──────────────────────────────────────────
     // s_vdda_mv defaults to 3300 mV.  On this board VDDA is ~2928 mV; using
@@ -680,29 +695,23 @@ void MW_CalTick(void)
 
                 // Quality check: warn if the span looks implausibly narrow.
                 //
-                // A healthy calibration should capture at least 30 % dR/R
-                // (≈ 6 Ω on a wire with R_max ≈ 20 Ω).  A small span almost
-                // always means the wire was still warm when R_max was sampled —
-                // the 5-second settle window was not long enough.
-                //
-                // The two thresholds are intentionally independent so the
-                // message is specific:
-                //   R_max < 12 Ω → wire was partially contracted at start.
-                //   span  < 2 Ω  → travel range too small for reliable control.
-                bool r_max_suspect = (cal_r_max < 12.0f);
-                bool span_suspect  = (span < 2.0f);
-                if (r_max_suspect || span_suspect) {
+                // Use dR/R (span as a % of R_max) rather than an absolute Ω
+                // threshold — this works for any wire regardless of its cold
+                // resistance.  A healthy Nitinol calibration should show at
+                // least 5 % dR/R; below that the wire was either still warm
+                // when R_max was sampled or did not contract fully at R_min.
+                float dr_r_pct = (cal_r_max > 0.0f)
+                                 ? (span / cal_r_max * 100.0f) : 0.0f;
+                bool span_suspect = (dr_r_pct < 5.0f);
+                if (span_suspect) {
                     print("cal: WARNING — calibration quality is poor:"); printCr();
-                    if (r_max_suspect) {
-                        print("  R_max "); printFloat(cal_r_max, 2);
-                        print(" ohm is below 12 ohm; wire was not fully relaxed."); printCr();
-                        print("  Run cal-wire again after the wire has cooled"); printCr();
-                        print("  (show-pwm R wire should be near 20 ohm first)."); printCr();
-                    }
-                    if (span_suspect) {
-                        print("  span "); printFloat(span, 2);
-                        print(" ohm is too small; contraction % will be noisy."); printCr();
-                    }
+                    print("  dR/R = "); printFloat(dr_r_pct, 1);
+                    print("% (span "); printFloat(span, 2); print(" ohm / R_max ");
+                    printFloat(cal_r_max, 2); print(" ohm)"); printCr();
+                    print("  Less than 5% dR/R — wire may not have been fully"); printCr();
+                    print("  relaxed at start or fully contracted at end."); printCr();
+                    print("  Run cal-wire again: let wire cool until show-pwm"); printCr();
+                    print("  R wire is stable, then run cal-wire immediately."); printCr();
                     print("  Contraction readings marked (cal) are unreliable."); printCr();
                 }
                 return;     // done — do not reschedule
@@ -913,11 +922,11 @@ void MW_CLI_ShowCal(void)
         print("travel"); tabTo(COL_VALUE);
         printFloat(100.0f * span / cal_r_max, 1); tabTo(COL_UNIT); print("% dR/R"); printCr();
 
+        float dr_r_pct = (cal_r_max > 0.0f)
+                         ? (span / cal_r_max * 100.0f) : 0.0f;
         print("quality"); tabTo(COL_VALUE);
-        if (cal_r_max < 12.0f)
-            print("POOR — R_max too low (wire was warm at calibration start)");
-        else if (span < 2.0f)
-            print("POOR — span too small for reliable contraction control");
+        if (dr_r_pct < 5.0f)
+            print("POOR — dR/R < 5% (wire not fully relaxed or not fully contracted)");
         else
             print("ok");
         printCr();
@@ -1076,6 +1085,212 @@ void MW_CLI_ShowCL(void)
     }
 
     print("---"); printCr();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Wire characterisation profiler
+//
+// Three-phase automated step-response test driven by the tea scheduler.
+// Samples contraction every CHAR_SAMPLE_MS ms; no SysTick wiring needed.
+//
+// Phase 0 — pre-cool : 0% PWM until IIR-filtered contraction is stable
+// Phase 1 — heat     : char_pwm% PWM until stable or CHAR_HEAT_MS timeout
+// Phase 2 — cool     : 0% PWM until stable or CHAR_COOL_MS timeout
+//
+// Stability: spread across CHAR_STABLE_COUNT readings < CHAR_STABLE_PCT %.
+// The value is set wider than the measurement noise floor so the trigger
+// fires on thermal settling, not noise excursions.
+// ═════════════════════════════════════════════════════════════════════════════
+
+static void char_stab_push(float c)
+{
+    char_stab[char_stab_idx] = c;
+    char_stab_idx = (uint8_t)((char_stab_idx + 1u) % CHAR_STABLE_COUNT);
+    if (char_stab_cnt < CHAR_STABLE_COUNT) char_stab_cnt++;
+}
+
+static bool char_is_stable(void)
+{
+    if (char_stab_cnt < CHAR_STABLE_COUNT) return false;
+    float lo = char_stab[0], hi = char_stab[0];
+    for (uint8_t i = 1u; i < CHAR_STABLE_COUNT; i++) {
+        if (char_stab[i] < lo) lo = char_stab[i];
+        if (char_stab[i] > hi) hi = char_stab[i];
+    }
+    return (hi - lo) < CHAR_STABLE_PCT;
+}
+
+static void char_stab_reset(void)
+{
+    char_stab_idx = 0u;
+    char_stab_cnt = 0u;
+    char_phase_ms = 0u;
+    for (uint8_t i = 0u; i < CHAR_STABLE_COUNT; i++) char_stab[i] = 0.0f;
+}
+
+MW_CharState_t MW_GetCharState(void) { return char_state; }
+
+void MW_CharTick(void)
+{
+    if (char_state == MW_CHAR_IDLE   ||
+        char_state == MW_CHAR_DONE   ||
+        char_state == MW_CHAR_ABORTED) return;
+
+    char_phase_ms += CHAR_SAMPLE_MS;
+    uint32_t elapsed = HAL_GetTick() - char_start_ms;
+
+    // ── Take a sample ────────────────────────────────────────────────────────
+    float vsup, vsense;
+    adc_snap(&vsup, &vsense);
+
+    float r = 0.0f;
+    float c = 0.0f;
+    if (vsense > 5.0f && vsense < vsup) {
+        r = MW_R_SENSE * (vsup - vsense) / vsense;
+        float r_top = cal_valid ? cal_r_max : MW_R_WIRE_RELAXED;
+        float r_bot = cal_valid ? cal_r_min : MW_R_WIRE_CONTRACTED;
+        float span  = r_top - r_bot;
+        if (span > 0.0f) {
+            c = (r_top - r) / span * 100.0f;
+            if (c <   0.0f) c =   0.0f;
+            if (c > 100.0f) c = 100.0f;
+        }
+    }
+
+    uint8_t phase = (char_state == MW_CHAR_PRECOOL) ? 0u :
+                    (char_state == MW_CHAR_HEATING)  ? 1u : 2u;
+
+    if (char_count < CHAR_MAX_SAMPLES) {
+        MW_CharSample_t *s = &char_buf[char_count++];
+        s->time_ms    = elapsed;
+        s->phase      = phase;
+        s->pwm_pct    = pwm_pct;
+        s->r_wire     = r;
+        s->contraction = c;
+    }
+
+    char_stab_push(c);
+
+    // ── Phase transitions ────────────────────────────────────────────────────
+    switch (char_state) {
+
+        case MW_CHAR_PRECOOL:
+            if (char_is_stable() || char_phase_ms >= CHAR_PRECOOL_MS) {
+                print("char: pre-cool done  R=");
+                printFloat(r, 2); print(" ohm  c=");
+                printFloat(c, 1); print("%"); printCr();
+                MW_SetPWM(char_pwm);
+                char_stab_reset();
+                char_state = MW_CHAR_HEATING;
+                print("char: step to "); printDec(char_pwm); print("% PWM..."); printCr();
+            }
+            break;
+
+        case MW_CHAR_HEATING:
+            // Require minimum 2 s in phase before declaring stable (ignore
+            // the initial transient while the IIR filter seeds).
+            if ((char_is_stable() && char_phase_ms >= 2000u) ||
+                 char_phase_ms >= CHAR_HEAT_MS) {
+                print("char: heat phase done  c=");
+                printFloat(c, 1); print("%"); printCr();
+                MW_SetPWM(0u);
+                char_stab_reset();
+                char_state = MW_CHAR_COOLING;
+                print("char: cooling (PWM=0)..."); printCr();
+            }
+            break;
+
+        case MW_CHAR_COOLING:
+            if ((char_is_stable() && char_phase_ms >= 2000u) ||
+                 char_phase_ms >= CHAR_COOL_MS) {
+                print("char: cool phase done  c=");
+                printFloat(c, 1); print("%"); printCr();
+                char_state = MW_CHAR_DONE;
+                print("char: complete — ");
+                printDec(char_count);
+                print(" samples  use dump-char for CSV"); printCr();
+                return;     // done — do not reschedule
+            }
+            break;
+
+        default:
+            return;
+    }
+
+    after(msec(CHAR_SAMPLE_MS), MW_CharTick);
+}
+
+// ── char-wire ( n ) ─────────────────────────────────────────────────────────
+void MW_CLI_CharWire(void)
+{
+    if (char_state == MW_CHAR_PRECOOL ||
+        char_state == MW_CHAR_HEATING  ||
+        char_state == MW_CHAR_COOLING) {
+        print("char: test already running — wait for done"); printCr();
+        return;
+    }
+
+    uint8_t pct = (uint8_t)ret();
+    if (pct == 0u || pct > MW_PWM_MAX_PCT) {
+        print("char: argument must be 1–"); printDec(MW_PWM_MAX_PCT); printCr();
+        return;
+    }
+
+    MW_SetTarget(-1.0f);    // disable closed loop during test
+    MW_SetPWM(0u);
+
+    char_state    = MW_CHAR_PRECOOL;
+    char_pwm      = pct;
+    char_count    = 0u;
+    char_start_ms = HAL_GetTick();
+    char_stab_reset();
+
+    print("char: pre-cooling at 0% (up to ");
+    printDec(CHAR_PRECOOL_MS / 1000u); print("s)..."); printCr();
+    print("char: will step to "); printDec(pct);
+    print("% then cool — use dump-char when done"); printCr();
+
+    after(msec(CHAR_SAMPLE_MS), MW_CharTick);
+}
+
+// ── dump-char ────────────────────────────────────────────────────────────────
+void MW_CLI_DumpChar(void)
+{
+    if (char_state == MW_CHAR_PRECOOL ||
+        char_state == MW_CHAR_HEATING  ||
+        char_state == MW_CHAR_COOLING) {
+        print("char: test running (");
+        printDec(char_count); print(" samples so far)"); printCr();
+        return;
+    }
+    if (char_count == 0u) {
+        print("char: no data — run char-wire first"); printCr();
+        return;
+    }
+
+    print("# char-wire step-response"); printCr();
+    print("# heat PWM: "); printDec(char_pwm); print("%"); printCr();
+    print("# phases: 0=precool  1=heat  2=cool"); printCr();
+    if (cal_valid) {
+        print("# R_max="); printFloat(cal_r_max, 2);
+        print("  R_min="); printFloat(cal_r_min, 2);
+        print("  span=");  printFloat(cal_r_max - cal_r_min, 3);
+        print(" ohm"); printCr();
+    } else {
+        print("# no calibration — contraction uses compile-time defaults"); printCr();
+    }
+    print("time_ms,phase,pwm_pct,r_wire,contraction_pct"); printCr();
+
+    for (uint32_t i = 0u; i < char_count; i++) {
+        MW_CharSample_t *s = &char_buf[i];
+        printDec(s->time_ms);        print(",");
+        printDec((uint32_t)s->phase);  print(",");
+        printDec((uint32_t)s->pwm_pct); print(",");
+        printFloat(s->r_wire,      3); print(",");
+        printFloat(s->contraction, 2);
+        printCr();
+    }
+    print("# end  samples="); printDec(char_count); printCr();
 }
 
 void print_float() {

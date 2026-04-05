@@ -155,15 +155,82 @@
 //   FZ_DEAD_PCT  must exceed the measurement noise floor (≈ ±8 %).
 //   FZ_LARGE_ERR / FZ_SMALL_ERR set the transition boundaries.
 //   FZ_RATE_THRESH controls how aggressively the anticipatory term fires.
-#define CL_PERIOD_MS         500u    // control update interval (ms)
-#define FZ_DEAD_PCT          8.0f    // ±% deadband — sized to exceed noise floor
-#define FZ_SMALL_ERR        12.0f    // small/medium error boundary (%)
-#define FZ_LARGE_ERR        25.0f    // medium/large error boundary (%)
-#define FZ_HIGH_PWM         75u      // PWM% applied for large positive error
-#define FZ_MED_PWM          45u      // PWM% applied for medium positive error
-#define FZ_LOW_PWM          25u      // PWM% applied for small positive error
-#define FZ_HOLD_PWM         18u      // maintenance PWM in/near deadband
-#define FZ_RATE_THRESH       4.0f    // %/tick rate that triggers anticipation
+//
+// Tuning basis (from char-wire step-response data):
+//   15% PWM → no sustained contraction (below activation threshold)
+//   20% PWM → ~65% steady-state contraction (25 s slow creep), cool ~4 s
+//   25% PWM → ~65% steady-state contraction (15 s slow creep), cool ~1.5 s
+//   35% PWM → ~100% steady-state contraction (10 s creep),     cool ~3 s
+//
+//   The wire has a phase-transition plateau near 65%: both 20% and 25% PWM
+//   converge there.  Exceeding 65% requires ≥35% PWM.  The activation
+//   threshold (below which the spring wins) is ~15–18% PWM.
+//
+//   Practical controllable range: ~25–80% contraction.
+//   Noise in the plateau zone: ±10–15% — deadband must exceed this.
+//   τ_heat (fast phase): ~1.5–2 s.  τ_cool (spring-assisted): ~0.7–1.5 s.
+//
+#define CL_PERIOD_MS         300u    // 300 ms — catches 1.5 s fast rise in 5 ticks
+#define FZ_DEAD_PCT         12.0f    // ±% deadband — exceeds ±10% plateau noise
+#define FZ_SMALL_ERR        20.0f    // small/medium error boundary (%)
+#define FZ_LARGE_ERR        35.0f    // medium/large error boundary (%)
+#define FZ_HIGH_PWM          35u     // PWM% for large error — full activation power
+#define FZ_MED_PWM           25u     // PWM% for medium error — plateau-level power
+#define FZ_LOW_PWM           20u     // PWM% for small error — just above threshold
+#define FZ_HOLD_PWM          18u     // maintenance PWM — just above activation threshold
+                                     // raise if wire relaxes at target; lower if it creeps up
+#define FZ_RATE_THRESH      10.0f    // %/tick — fast initial rise is ~15–20%/tick
+
+// ── Wire characterisation profiler ───────────────────────────────────────────
+// char-wire ( n ) runs a three-phase automated step-response test:
+//
+//   Phase 0 — pre-cool : 0% PWM until contraction stabilises (up to CHAR_PRECOOL_MS)
+//   Phase 1 — heat     : n% PWM; record until stable or CHAR_HEAT_MS timeout
+//   Phase 2 — cool     : 0% PWM; record until stable or CHAR_COOL_MS timeout
+//
+// Samples are taken every CHAR_SAMPLE_MS via the tea scheduler; no SysTick
+// wiring is required.  dump-char emits CSV for all three phases.
+//
+// Paste the CSV into a spreadsheet and plot contraction vs. time to read:
+//   τ_heat  — time to reach 63 % of steady-state contraction after step-on
+//   τ_cool  — time to fall to 37 % of peak after step-off
+//   c_ss    — steady-state contraction at char_pwm % duty
+//   spring  — initial contraction drop in the first 1–2 samples after power-off
+//             (the mechanical restoring force the system applies when unloaded)
+//
+// Stability criterion: spread across CHAR_STABLE_COUNT consecutive readings
+// (each already IIR-filtered) < CHAR_STABLE_PCT %.  Set wider than the noise
+// floor so the trigger fires when the thermal transient has settled, not when
+// measurement noise happens to be quiet.
+#define CHAR_SAMPLE_MS        200u   // sample interval (ms) — matches MW_SampleR cadence
+#define CHAR_PRECOOL_MS     15000u   // max pre-cool phase (ms)
+#define CHAR_HEAT_MS        30000u   // max heat phase (ms)
+#define CHAR_COOL_MS        30000u   // max cool phase (ms)
+#define CHAR_MAX_SAMPLES      512u   // sample buffer depth (512 × 200 ms = 102 s)
+#define CHAR_STABLE_PCT       5.0f   // % spread to declare stable — wider than noise floor
+#define CHAR_STABLE_COUNT      10u   // samples in stability window (10 × 200 ms = 2 s)
+
+typedef enum {
+    MW_CHAR_IDLE     = 0,
+    MW_CHAR_PRECOOL,        // waiting for wire to cool at 0%
+    MW_CHAR_HEATING,        // PWM step applied; recording rise
+    MW_CHAR_COOLING,        // PWM removed; recording fall
+    MW_CHAR_DONE,
+    MW_CHAR_ABORTED,
+} MW_CharState_t;
+
+typedef struct {
+    uint32_t time_ms;       // ms since char-wire started
+    uint8_t  phase;         // 0=precool  1=heat  2=cool
+    uint8_t  pwm_pct;       // PWM duty at this sample
+    float    r_wire;        // Ω
+    float    contraction;   // % (cal-based if valid, defaults otherwise)
+} MW_CharSample_t;
+
+MW_CharState_t  MW_GetCharState(void);
+void            MW_CharTick(void);          // tea action — started by MW_CLI_CharWire
+void            MW_CLI_CharWire(void);      // char-wire  ( n ) — n = heat PWM %
+void            MW_CLI_DumpChar(void);      // dump-char
 
 typedef enum {
     MW_CAL_IDLE        = 0,
