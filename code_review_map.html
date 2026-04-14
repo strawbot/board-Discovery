@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nitinol Muscle Wire — Code Review Map</title>
+<style>
+  :root {
+    --bg:      #1a1a2e;
+    --surface: #16213e;
+    --card:    #0f3460;
+    --border:  #1a4a7a;
+    --accent:  #e94560;
+    --amber:   #f5a623;
+    --green:   #4caf50;
+    --blue:    #4fc3f7;
+    --purple:  #ce93d8;
+    --text:    #e0e0e0;
+    --muted:   #8899aa;
+    --code-bg: #0a0a1a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 24px;
+  }
+  h1 { color: var(--blue); font-size: 22px; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+  h2 { color: var(--amber); font-size: 16px; margin: 32px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { color: var(--blue); font-size: 14px; margin: 20px 0 8px; }
+  h4 { color: var(--purple); font-size: 13px; margin: 14px 0 6px; }
+  p { margin-bottom: 10px; }
+  ul, ol { margin: 8px 0 10px 20px; }
+  li { margin-bottom: 4px; }
+  a { color: var(--blue); text-decoration: none; }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+  }
+  .card-accent  { border-left: 4px solid var(--accent); }
+  .card-amber   { border-left: 4px solid var(--amber); }
+  .card-green   { border-left: 4px solid var(--green); }
+  .card-blue    { border-left: 4px solid var(--blue); }
+  .card-purple  { border-left: 4px solid var(--purple); }
+
+  /* Code blocks */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    margin: 10px 0;
+  }
+  code {
+    background: var(--code-bg);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    color: var(--blue);
+  }
+
+  /* Before/After diff boxes */
+  .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0; }
+  .diff-before { background: #1a0a0a; border: 1px solid #5a2020; border-radius: 6px; padding: 10px 12px; }
+  .diff-after  { background: #0a1a0a; border: 1px solid #205a20; border-radius: 6px; padding: 10px 12px; }
+  .diff-label  { font-size: 11px; font-weight: bold; margin-bottom: 6px; letter-spacing: 0.05em; }
+  .diff-before .diff-label { color: #e57373; }
+  .diff-after  .diff-label { color: #81c784; }
+  .diff-before pre, .diff-after pre { background: transparent; border: none; padding: 0; margin: 0; font-size: 11.5px; }
+
+  /* Status badges */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: bold;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .badge-new    { background: #1a4a1a; color: var(--green); }
+  .badge-fixed  { background: #2a2a0a; color: var(--amber); }
+  .badge-change { background: #1a2a4a; color: var(--blue); }
+
+  /* Callout boxes */
+  .callout {
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 10px 0;
+    font-size: 13px;
+  }
+  .callout-warn  { background: #2a1a00; border-left: 3px solid var(--amber); }
+  .callout-info  { background: #001a2a; border-left: 3px solid var(--blue); }
+  .callout-ok    { background: #001a00; border-left: 3px solid var(--green); }
+  .callout-risk  { background: #2a0000; border-left: 3px solid var(--accent); }
+  .callout strong { color: var(--amber); }
+
+  /* Two-column layout for overview */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  /* Test checklist */
+  .checklist { list-style: none; margin-left: 0; }
+  .checklist li::before { content: '☐  '; color: var(--amber); }
+  .checklist li { margin-bottom: 6px; }
+
+  /* File path */
+  .filepath { color: var(--muted); font-size: 12px; font-family: monospace; }
+
+  /* Section nav */
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 20px; margin-bottom: 28px; }
+  .toc h3 { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; margin: 0 0 8px; }
+  .toc ol { margin-left: 16px; }
+  .toc li { margin-bottom: 3px; }
+
+  @media (max-width: 700px) {
+    .diff-grid, .two-col { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Nitinol Muscle Wire — Code Review Map</h1>
+<p class="subtitle">STM32F407 Discovery · TimbreOS · Limbs/muscle_wire.c · Reviewed 2026-04-08</p>
+
+<!-- TABLE OF CONTENTS -->
+<div class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#overview">Overview of changes</a></li>
+    <li><a href="#controller">MW_CLTick — PI → Fuzzy Interpolated Controller</a></li>
+    <li><a href="#calibration">MW_Calibrate — Quality Warning Fix</a></li>
+    <li><a href="#settarget">MW_SetTarget — Zero-target Deadband Fix</a></li>
+    <li><a href="#charwire">MW_CharTick / MW_CLI_DumpChar — New Char-Wire Profiler</a></li>
+    <li><a href="#words">discoverywords.txt — New CLI Entries</a></li>
+    <li><a href="#tradeoffs">Known Trade-offs &amp; Edge Cases</a></li>
+    <li><a href="#testing">Test Checklist</a></li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════════════ OVERVIEW -->
+<h2 id="overview">1 · Overview of Changes</h2>
+
+<div class="two-col">
+  <div class="card card-blue">
+    <h3>Why the controller was replaced</h3>
+    <p>A PI controller was the first approach. It failed because the wire's usable resistance span is only <strong>1.2 Ω</strong> (8.82 → 7.62 Ω, 13.6% dR/R), and measurement noise reaches ±10–15% contraction at the 100 ms ADC cadence. Any KP large enough to reject disturbances caused full-scale oscillation; any KP small enough to be stable was too slow to reject the spring load.</p>
+    <p>A fuzzy controller with a wide deadband (12%) tolerates the noise floor while still driving hard when error is large.</p>
+  </div>
+  <div class="card card-amber">
+    <h3>Iteration path</h3>
+    <ol>
+      <li><strong>PI</strong> — oscillated at all KP values tested (0.3, 0.1)</li>
+      <li><strong>Discrete fuzzy</strong> — settled better; hard 0% cut on slight overshoot caused spring snap visible in hardware</li>
+      <li><strong>Fuzzy + soft-cool</strong> — added 10% intermediate; still stepped</li>
+      <li><strong>Piecewise linear interpolation</strong> — smooth ramps between control points; currently deployed</li>
+    </ol>
+  </div>
+</div>
+
+<div class="card card-accent">
+  <h3>Files touched</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead><tr style="color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.08em;">
+      <th style="text-align:left; padding:4px 8px;">File</th>
+      <th style="text-align:left; padding:4px 8px;">Type</th>
+      <th style="text-align:left; padding:4px 8px;">Change</th>
+    </tr></thead>
+    <tbody>
+      <tr><td style="padding:4px 8px;"><code>Limbs/muscle_wire.h</code></td><td style="padding:4px 8px;">header</td><td style="padding:4px 8px;">PI defines → fuzzy defines; added char-wire enums/struct/declares</td></tr>
+      <tr style="background:#ffffff08;"><td style="padding:4px 8px;"><code>Limbs/muscle_wire.c</code></td><td style="padding:4px 8px;">source</td><td style="padding:4px 8px;">MW_CLTick rewritten; calibration warning fixed; char-wire profiler added</td></tr>
+      <tr><td style="padding:4px 8px;"><code>Board/discoverywords.txt</code></td><td style="padding:4px 8px;">word registry</td><td style="padding:4px 8px;">Two new CLI entries: <code>char-wire</code>, <code>dump-char</code></td></tr>
+      <tr style="background:#ffffff08;"><td style="padding:4px 8px;"><code>Board/wordlist.c</code></td><td style="padding:4px 8px;"><em>generated</em></td><td style="padding:4px 8px;">Do not edit — regenerated by <code>parsewords.py</code> from discoverywords.txt</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════ CONTROLLER -->
+<h2 id="controller">2 · MW_CLTick — PI → Fuzzy Interpolated Controller <span class="badge badge-change">REWRITE</span></h2>
+<p class="filepath">Limbs/muscle_wire.c · Limbs/muscle_wire.h</p>
+
+<h3>What changed</h3>
+
+<div class="diff-grid">
+  <div class="diff-before">
+    <div class="diff-label">BEFORE — PI controller</div>
+    <pre>static float cl_integral = 0.0f;
+
+// MW_CLTick:
+float error = cl_target_pct - measured;
+cl_integral += error * (CL_PERIOD_MS / 1000.0f);
+float pwm_f = KP * error + KI * cl_integral;
+// clamp → MW_SetPWM</pre>
+  </div>
+  <div class="diff-after">
+    <div class="diff-label">AFTER — fuzzy interpolated</div>
+    <pre>static float cl_prev_pct = 0.0f;
+
+// MW_CLTick:
+float error = cl_target_pct - measured;
+float rate  = (measured > 0 &amp;&amp; cl_prev_pct > 0)
+              ? (measured - cl_prev_pct) : 0.0f;
+cl_prev_pct = measured;
+// piecewise linear ramps → MW_SetPWM</pre>
+  </div>
+</div>
+
+<h3>Helper: <code>fz_lerp()</code></h3>
+<pre>static float fz_lerp(float x, float x0, float x1, float y0, float y1)
+{
+    if (x &lt;= x0) return y0;
+    if (x &gt;= x1) return y1;
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+}</pre>
+
+<h3>Control surfaces (heating vs. cooling)</h3>
+<div class="two-col">
+  <div class="card card-green">
+    <h4>Heating ramp (error ≥ 0, needs more contraction)</h4>
+    <pre>error &lt; DEAD_PCT  →  HOLD_PWM  (flat)
+DEAD → SMALL      →  lerp(LOW, MED)
+SMALL → LARGE     →  lerp(MED, HIGH)
+error &gt; LARGE     →  HIGH_PWM  (flat)
+
+Rate guard: if wire is already moving toward
+target fast (rate &gt; RATE_THRESH), blend toward
+HOLD_PWM to avoid overshoot.</pre>
+  </div>
+  <div class="card card-accent">
+    <h4>Cooling ramp (error &lt; 0, above target)</h4>
+    <pre>|error| &lt; DEAD_PCT  →  HOLD_PWM  (flat)
+DEAD → SMALL        →  lerp(HOLD, SOFT_COOL)
+SMALL → LARGE       →  lerp(SOFT_COOL, 0%)
+|error| &gt; LARGE     →  0%
+
+Rate guard: if wire is already cooling fast
+(rate &lt; -RATE_THRESH), clamp to HOLD or
+SOFT_COOL to avoid spring snap.</pre>
+  </div>
+</div>
+
+<h3>Tuning constants (current values)</h3>
+<pre>CL_PERIOD_MS      300    // controller cadence (ms)
+FZ_DEAD_PCT       12.0   // deadband — must exceed noise floor (~10%)
+FZ_SMALL_ERR      20.0   // transition point low→mid drive
+FZ_LARGE_ERR      35.0   // transition point mid→full drive
+FZ_HIGH_PWM       35     // full drive (%)
+FZ_MED_PWM        25     // medium drive (%)
+FZ_LOW_PWM        20     // light drive (%)
+FZ_HOLD_PWM       18     // hold/deadband PWM (%)
+FZ_SOFT_COOL_PWM  10     // gentle coast-down PWM (%)
+FZ_MIN_HOLD_TARGET 20.0  // targets below this use 0% in deadband
+FZ_RATE_THRESH    10.0   // rate anticipation threshold (%/tick)</pre>
+
+<div class="callout callout-warn">
+  <strong>Tuning note:</strong> FZ_HOLD_PWM = 18% sits just above the measured activation threshold (~15–18%). If the wire creeps at a steady target, <strong>decrease</strong> HOLD_PWM by 1. If it relaxes away from target during the deadband, <strong>increase</strong> by 1. This is the most sensitive tuning parameter.
+</div>
+<div class="callout callout-info">
+  <strong>Char-wire data insight:</strong> 20% and 25% PWM both plateau at ~65% contraction — the wire's heating plateau. 35% PWM reaches ~100%. The useful control range is roughly 25–80% contraction. The heating time-constant τ ≈ 1.8 s; cooling τ ≈ 700 ms (spring-assisted, ~2.5× faster than heating).
+</div>
+
+<!-- ══════════════════════════════════════════════ CALIBRATION -->
+<h2 id="calibration">3 · MW_Calibrate — Quality Warning Fix <span class="badge badge-fixed">BUG FIX</span></h2>
+<p class="filepath">Limbs/muscle_wire.c</p>
+
+<h3>The bug</h3>
+<p>Calibration emitted warnings referencing absolute Ω thresholds written for a ~20 Ω wire. This wire measures <strong>~8.9 Ω cold</strong>. Every calibration run triggered the warning even on a perfect result.</p>
+
+<div class="diff-grid">
+  <div class="diff-before">
+    <div class="diff-label">BEFORE — wrong thresholds</div>
+    <pre>if (cal_r_max &lt; 12.0f) {
+    print("R_max below 12 ohm; not relaxed");
+    print("show-pwm R wire near 20 ohm first");
+}</pre>
+  </div>
+  <div class="diff-after">
+    <div class="diff-label">AFTER — relative dR/R check</div>
+    <pre>float dr_r_pct = span / cal_r_max * 100.0f;
+bool span_suspect = (dr_r_pct &lt; 5.0f);
+if (span_suspect) {
+    print("span &lt; 5% dR/R — may be noise");
+    print("ensure wire was fully relaxed");
+}</pre>
+  </div>
+</div>
+
+<div class="callout callout-ok">
+  This wire achieves <strong>13.6% dR/R</strong> (span 1.20 Ω / R_max 8.82 Ω). The 5% threshold gives comfortable margin. A suspect result would be span &lt; 0.44 Ω on this wire.
+</div>
+<div class="callout callout-info">
+  Same fix applied to <code>show-cal</code> output — it now displays <code>dR/R: 13.6%</code> instead of the misleading absolute comparisons.
+</div>
+
+<!-- ══════════════════════════════════════════════ SETTARGET -->
+<h2 id="settarget">4 · MW_SetTarget — Zero-target Deadband Fix <span class="badge badge-fixed">BUG FIX</span></h2>
+<p class="filepath">Limbs/muscle_wire.c · Limbs/muscle_wire.h</p>
+
+<h3>The bug</h3>
+<p>With <code>set-per 0</code>, the controller computed <code>error = 0 − 0 = 0</code> (measured was clamped to 0 when wire was fully relaxed), fell into the deadband, and applied <code>FZ_HOLD_PWM = 18%</code> continuously. The wire never fully relaxed — it sat warm at ~15–18% PWM indefinitely.</p>
+
+<div class="diff-grid">
+  <div class="diff-before">
+    <div class="diff-label">BEFORE — hold PWM always used in deadband</div>
+    <pre>const float h = (float)FZ_HOLD_PWM;
+// h = 18% regardless of target</pre>
+  </div>
+  <div class="diff-after">
+    <div class="diff-label">AFTER — hold suppressed below min target</div>
+    <pre>const float h =
+  (cl_target_pct &gt;= FZ_MIN_HOLD_TARGET)
+  ? (float)FZ_HOLD_PWM : 0.0f;
+// h = 0% when target &lt; 20%</pre>
+  </div>
+</div>
+
+<h3>Rate guard for invalid→valid transition</h3>
+<div class="diff-grid">
+  <div class="diff-before">
+    <div class="diff-label">BEFORE — phantom rate spike</div>
+    <pre>float rate = measured - cl_prev_pct;
+// when wire transitions from clamped 0
+// to valid 21.7%, rate shows +21.7 phantom</pre>
+  </div>
+  <div class="diff-after">
+    <div class="diff-label">AFTER — guarded</div>
+    <pre>float rate = (measured &gt; 0.0f &amp;&amp; cl_prev_pct &gt; 0.0f)
+             ? (measured - cl_prev_pct) : 0.0f;</pre>
+  </div>
+</div>
+
+<div class="callout callout-warn">
+  <strong>FZ_MIN_HOLD_TARGET = 20.0f</strong> means any target below 20% contraction behaves as "full off" in the deadband. This is intentional — the activation threshold is ~15–18% PWM, so holding at 18% with a near-zero target just keeps the wire warm for no reason.
+</div>
+
+<!-- ══════════════════════════════════════════════ CHAR WIRE -->
+<h2 id="charwire">5 · MW_CharTick / MW_CLI_DumpChar — Char-Wire Profiler <span class="badge badge-new">NEW</span></h2>
+<p class="filepath">Limbs/muscle_wire.c · Limbs/muscle_wire.h</p>
+
+<h3>Purpose</h3>
+<p>Automated 3-phase step-response test for characterising a specific wire's dynamics without manual intervention. Results are emitted as CSV for paste into a spreadsheet.</p>
+
+<h3>State machine</h3>
+<pre>MW_CHAR_IDLE
+  │  (char-wire N command)
+  ▼
+MW_CHAR_PRECOOL  ──── 15 s at 0% PWM ────────────────── wait for stability
+  │
+  ▼
+MW_CHAR_HEATING  ──── up to 30 s at N% PWM ──────────── wait for stability
+  │
+  ▼
+MW_CHAR_COOLING  ──── up to 30 s at 0% PWM ──────────── wait for stability
+  │
+  ▼
+MW_CHAR_DONE     ──── "dump-char" to emit CSV</pre>
+
+<h3>Stability detection</h3>
+<p>A rolling window of <code>CHAR_STABLE_COUNT = 10</code> samples is maintained. Stable when the range (max−min) within the window is &lt; <code>CHAR_STABLE_PCT = 5.0%</code> contraction. Sampling cadence: 200 ms.</p>
+
+<h3>Buffer</h3>
+<pre>MW_CharSample_t char_buf[512];   // ~102 s at 200 ms cadence
+// { uint32_t time_ms, uint8_t phase, uint8_t pwm_pct,
+//   float r_wire, float contraction }</pre>
+
+<h3>CLI usage</h3>
+<pre>char-wire 25      // run test: precool, heat at 25%, cool to rest
+dump-char         // emit CSV (after char-wire completes)</pre>
+
+<div class="callout callout-warn">
+  <strong>Char-wire must not run while closed-loop is active.</strong> MW_CharTick takes direct PWM control. Calling <code>char-wire</code> while <code>set-per</code> has an active target will produce confusing results — the CL tick and char tick will fight over PWM. Consider adding a guard that aborts char if <code>cl_target_pct ≥ 0</code>.
+</div>
+<div class="callout callout-info">
+  <strong>Key findings from hardware runs:</strong>
+  <ul style="margin-top:6px;">
+    <li>Activation threshold: ~15–18% PWM (below this, no movement)</li>
+    <li>20% and 25% PWM both plateau at ~65% contraction (heating plateau)</li>
+    <li>35% PWM reaches ~100% contraction</li>
+    <li>τ_heat ≈ 1.8 s · τ_cool ≈ 700 ms (spring-assisted, 2.5× faster)</li>
+    <li>Usable control range: ~25–80% contraction</li>
+  </ul>
+</div>
+
+<!-- ══════════════════════════════════════════════ WORDS -->
+<h2 id="words">6 · discoverywords.txt — New CLI Entries <span class="badge badge-new">NEW</span></h2>
+<p class="filepath">Board/discoverywords.txt</p>
+
+<div class="callout callout-risk">
+  <strong>Important:</strong> <code>wordlist.c</code> is a <em>generated file</em>. Never edit it directly. All CLI word registrations live in <code>discoverywords.txt</code> and are processed by <code>parsewords.py</code> as a pre-build step.
+</div>
+
+<pre>// Added to PWM/muscle wire Words block:
+char-wire    MW_CLI_CharWire    //  ( n ) run 3-phase step-response: pre-cool, heat at n%, cool to rest
+dump-char    MW_CLI_DumpChar    //  emit char-wire step-response data as CSV (paste into spreadsheet)</pre>
+
+<p>Also updated <code>show-cl</code> comment to reflect current show output (target, measured, error, rate, PWM — no longer integral/region).</p>
+
+<!-- ══════════════════════════════════════════════ TRADE-OFFS -->
+<h2 id="tradeoffs">7 · Known Trade-offs &amp; Edge Cases</h2>
+
+<div class="card card-accent">
+  <h3>Noise floor vs. deadband</h3>
+  <p>The 1.2 Ω span yields ≈ 0.012 Ω per 1% contraction. At the ADC's noise level (±1–2 counts after IIR filter), this translates to ±10–15% contraction noise. The 12% deadband is set just above this noise floor. Reducing FZ_DEAD_PCT below ~10% risks oscillation returning. The only way to reduce it further is to widen the IIR filter (lower α) or increase the sample count, both at the cost of slower response.</p>
+</div>
+
+<div class="card card-amber">
+  <h3>Rate anticipation uses one-tick delta</h3>
+  <p>The rate term is <code>measured[t] − measured[t−1]</code> at 300 ms intervals, so it's actually a finite-difference velocity estimate. At the noise level, this is also noisy (up to ±30%/tick). The 10%/tick threshold filters most noise bursts, but a sustained upward noise run can trigger the rate guard. If this causes hunting, increase FZ_RATE_THRESH or apply a second IIR to the rate estimate.</p>
+</div>
+
+<div class="card card-blue">
+  <h3>Char-wire vs. closed-loop conflict</h3>
+  <p>No mutex or ownership flag guards PWM access between MW_CharTick and MW_CLTick. Running both simultaneously will cause undefined PWM output. Mitigation: document "run set-per off before char-wire" in CLI help, or add a <code>cl_active</code> flag check at the start of MW_CharTick.</p>
+</div>
+
+<div class="card card-purple">
+  <h3>Buffer overflow in char profiler</h3>
+  <p><code>char_buf</code> holds 512 samples at 200 ms cadence = 102.4 s maximum. Phase timeouts (15 + 30 + 30 s = 75 s) are within budget, but if stability is never detected and phases run to timeout, total could approach the limit. The code checks <code>char_count &lt; CHAR_MAX_SAMPLES</code> before writing, so it won't overflow — but the last samples will be silently dropped if the test runs very long.</p>
+</div>
+
+<div class="card card-green">
+  <h3>printFloat0 rounding (known, not fixed)</h3>
+  <p>TimbreOS <code>printers.c</code> has a rounding bug where values like 0.95 display as 0.5. This affects <code>show-cl</code> and <code>show-cal</code> output at certain values. The file is outside the mounted folder and was not modified in this session. Contraction values above ~5% are unaffected in practice.</p>
+</div>
+
+<!-- ══════════════════════════════════════════════ TESTING -->
+<h2 id="testing">8 · Test Checklist</h2>
+
+<div class="two-col">
+  <div class="card">
+    <h3>Calibration</h3>
+    <ul class="checklist">
+      <li>Run <code>cal-wire</code> with wire at room temperature — confirm no false warnings</li>
+      <li>Verify <code>dR/R</code> ≥ 5% reported in quality check</li>
+      <li>Run <code>show-cal</code> — confirm R_max ~8.9 Ω, span ~1.2 Ω</li>
+      <li>Run <code>cal-wire</code> with wire warm — confirm "not relaxed" warning fires (dR/R &lt; 5%)</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Zero-target (set-per 0 fix)</h3>
+    <ul class="checklist">
+      <li><code>set-per 0</code> → wire should relax completely, PWM = 0%</li>
+      <li><code>show-cl</code> → confirm measured = --, PWM = 0%, state idle/off</li>
+      <li>Leave for 30 s — wire must not drift warm</li>
+      <li>Then <code>set-per 50</code> → confirm controller engages</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Closed-loop stability</h3>
+    <ul class="checklist">
+      <li><code>set-per 50</code> → settles without oscillation within 5 s</li>
+      <li>Apply load (push limb) → recovers to target within 3 s</li>
+      <li><code>set-per 80</code> → no spring snap overshoot on heating</li>
+      <li><code>set-per 30</code> → gentle cool-down, no sudden drop-and-snap</li>
+      <li>Step 30 → 70 → 30 three times — consistent response</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Char-wire profiler</h3>
+    <ul class="checklist">
+      <li><code>char-wire 25</code> → precool, heat, cool phases complete</li>
+      <li>Terminal shows phase transitions</li>
+      <li><code>dump-char</code> → emits CSV with correct columns</li>
+      <li>Paste into spreadsheet — verify τ_heat ≈ 1.8 s, τ_cool ≈ 700 ms</li>
+      <li>Confirm char aborts gracefully if wire disconnected mid-run</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout callout-info" style="margin-top:16px;">
+  <strong>Hold PWM field-tune procedure:</strong> With <code>set-per 40</code>, watch the wire for 60 s. If it slowly relaxes away from target, increment <code>FZ_HOLD_PWM</code> by 1 and rebuild. If it slowly creeps above target, decrement by 1. The sweet spot is where the wire holds position with minimal drift during the deadband phase.
+</div>
+
+<p style="margin-top:32px; color:var(--muted); font-size:12px; border-top:1px solid var(--border); padding-top:12px;">
+  Generated for TimbreOS / STM32F407 Nitinol project · muscle_wire.c rev 2026-04-08
+</p>
+
+</body>
+</html>

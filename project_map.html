@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Discovery Project Map</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1117; color: #e2e8f0; font-family: 'SF Mono', 'Fira Code', monospace; padding: 24px; }
+  h1 { font-size: 18px; font-weight: 600; color: #f8fafc; margin-bottom: 6px; letter-spacing: 0.5px; }
+  .subtitle { font-size: 11px; color: #64748b; margin-bottom: 24px; }
+
+  .canvas { display: grid; grid-template-columns: 220px 220px 220px 220px; gap: 16px; align-items: start; }
+
+  .col-label { font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+               color: #475569; margin-bottom: 8px; padding-left: 2px; }
+
+  .box { border-radius: 8px; border: 1px solid; padding: 10px 12px; margin-bottom: 10px; }
+  .box-title { font-size: 11px; font-weight: 700; letter-spacing: 0.3px; margin-bottom: 6px; }
+  .box-file { font-size: 10px; color: #94a3b8; line-height: 1.7; padding-left: 8px; }
+  .box-file span { display: block; }
+  .box-file .focus { color: #fbbf24; font-weight: 600; }
+  .box-file .note { color: #64748b; font-size: 9px; padding-left: 12px; }
+
+  /* colour themes */
+  .hw   { background: #1e1b2e; border-color: #4c1d95; }
+  .hw   .box-title { color: #a78bfa; }
+
+  .rtos { background: #1a2535; border-color: #1e40af; }
+  .rtos .box-title { color: #60a5fa; }
+
+  .brd  { background: #0f2318; border-color: #14532d; }
+  .brd  .box-title { color: #4ade80; }
+
+  .limb { background: #2d1b0f; border-color: #92400e; }
+  .limb .box-title { color: #fb923c; }
+
+  .net  { background: #0f1e2d; border-color: #0c4a6e; }
+  .net  .box-title { color: #38bdf8; }
+
+  .gen  { background: #1c1c1c; border-color: #374151; }
+  .gen  .box-title { color: #9ca3af; }
+
+  /* flow arrows row */
+  .flow { margin: 20px 0 16px; display: flex; gap: 0; align-items: center; flex-wrap: wrap; }
+  .flow-step { background: #1e293b; border: 1px solid #334155; border-radius: 6px;
+               padding: 6px 12px; font-size: 10px; color: #cbd5e1; white-space: nowrap; }
+  .flow-arrow { color: #475569; font-size: 14px; padding: 0 6px; }
+
+  /* CLI word table */
+  .word-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+  .word-group { background: #111827; border: 1px solid #1f2937; border-radius: 6px; padding: 10px 12px; }
+  .word-group-title { font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+                      color: #6b7280; margin-bottom: 6px; }
+  .word-entry { font-size: 10px; line-height: 1.8; }
+  .word-name { color: #fbbf24; }
+  .word-fn   { color: #64748b; }
+
+  /* signal path */
+  .signal { margin-top: 20px; background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 14px 16px; }
+  .signal-title { font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+                  color: #475569; margin-bottom: 10px; }
+  .signal-row { display: flex; align-items: center; gap: 0; margin-bottom: 6px; flex-wrap: wrap; }
+  .sig-node { background: #1e293b; border: 1px solid #334155; border-radius: 4px;
+              padding: 3px 8px; font-size: 10px; color: #cbd5e1; white-space: nowrap; }
+  .sig-node.hi { background: #2d1b0f; border-color: #92400e; color: #fb923c; }
+  .sig-node.lo { background: #0f2318; border-color: #14532d; color: #4ade80; }
+  .sig-node.os { background: #1a2535; border-color: #1e40af; color: #60a5fa; }
+  .sig-arr  { color: #475569; font-size: 12px; padding: 0 4px; }
+  .sig-label { font-size: 9px; color: #475569; padding: 0 4px; }
+
+  hr.divider { border: none; border-top: 1px solid #1e293b; margin: 20px 0; }
+  .section-title { font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+                   color: #475569; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<h1>Discovery — Project Map</h1>
+<p class="subtitle">STM32F407 Discovery · Nitinol muscle wire controller · TimbreOS</p>
+
+<div class="section-title">Architecture Layers</div>
+<div class="canvas">
+
+  <!-- COL 1: Hardware / Platform -->
+  <div>
+    <div class="col-label">Hardware &amp; Platform</div>
+
+    <div class="box hw">
+      <div class="box-title">STM32F407 Discovery</div>
+      <div class="box-file">
+        <span>168 MHz Cortex-M4 + FPU</span>
+        <span>192 KB SRAM · 1 MB Flash</span>
+        <span>Ethernet MAC · USB OTG FS</span>
+        <span>TIM3 → PB5 PWM (1 kHz)</span>
+        <span>ADC1+ADC2 dual simultaneous</span>
+        <span>PA3 (supply sense) · PB0 (I×R)</span>
+      </div>
+    </div>
+
+    <div class="box gen">
+      <div class="box-title">Core — HAL Init (generated)</div>
+      <div class="box-file">
+        <span>Core/Src/main.c</span>
+        <span>Core/Src/stm32f4xx_it.c</span>
+        <span class="note">TIM3_IRQHandler → MW_TIM3_IRQHandler</span>
+        <span>Core/Src/gpio.c · tim.c · adc.c</span>
+        <span>Core/Inc/main.h · stm32f4xx_hal_conf.h</span>
+      </div>
+    </div>
+
+    <div class="box gen">
+      <div class="box-title">Drivers (vendor)</div>
+      <div class="box-file">
+        <span>Drivers/CMSIS/  — core_cm4.h etc.</span>
+        <span>Drivers/STM32F4xx_HAL_Driver/</span>
+        <span class="note">HAL + LL layers used via stm32f4xx_ll_*.h</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- COL 2: TimbreOS (RTOS) -->
+  <div>
+    <div class="col-label">TimbreOS (RTOS — external)</div>
+
+    <div class="box rtos">
+      <div class="box-title">tea — Scheduler</div>
+      <div class="box-file">
+        <span>tea.h</span>
+        <span>after(msec(N), action)</span>
+        <span class="note">schedules one-shot callbacks</span>
+        <span>namedAction(fn)</span>
+        <span class="note">registers fn so scheduler can find it</span>
+      </div>
+    </div>
+
+    <div class="box rtos">
+      <div class="box-title">CLI Engine</div>
+      <div class="box-file">
+        <span>cli.h</span>
+        <span>ret() — pop arg from data stack</span>
+        <span class="note">Forth-style stack-based interpreter</span>
+        <span>maybeCr() — ensure clean line</span>
+      </div>
+    </div>
+
+    <div class="box rtos">
+      <div class="box-title">Printers</div>
+      <div class="box-file">
+        <span>printers.h</span>
+        <span>print(str) · printCr()</span>
+        <span>printFloat(f, n) · printDec(n)</span>
+        <span>tabTo(col)</span>
+        <span class="note">⚠ printFloat0 rounding bug: 0.9→0.5</span>
+        <span class="note">fix in TimbreOS/printers.c</span>
+      </div>
+    </div>
+
+    <div class="box rtos">
+      <div class="box-title">HTTP Server</div>
+      <div class="box-file">
+        <span>http_server.h</span>
+        <span>http_mw_live_feed(V, R, PWM)</span>
+        <span class="note">SSE stream → /mw_stream</span>
+        <span class="note">browser live graph at 5 Hz</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- COL 3: Board layer -->
+  <div>
+    <div class="col-label">Board Layer</div>
+
+    <div class="box brd">
+      <div class="box-title">ADC Driver</div>
+      <div class="box-file">
+        <span>Board/adc_driver.c · .h</span>
+        <span>ADC_SimInit() — dual simult. mode</span>
+        <span>ADC_SimBurstRead(raw0, raw1, n)</span>
+        <span class="note">4 pairs averaged → √4 noise reduction</span>
+        <span>ADC_GetVDDA_mv() — calibrated ref</span>
+      </div>
+    </div>
+
+    <div class="box brd">
+      <div class="box-title">CLI Word Registry</div>
+      <div class="box-file">
+        <span class="focus">Board/discoverywords.txt</span>
+        <span class="note">EDIT THIS — source of truth</span>
+        <span>↓ parsewords.py (pre-build)</span>
+        <span>Board/wordlist.c (generated)</span>
+        <span class="note">do not edit wordlist.c directly</span>
+        <span>Board/help.c (generated)</span>
+        <span>Board/wordlist.txt (generated)</span>
+      </div>
+    </div>
+
+    <div class="box brd">
+      <div class="box-title">Connectivity</div>
+      <div class="box-file">
+        <span>Board/network_init.c — Ethernet</span>
+        <span>Board/ethernetif.c — LwIP glue</span>
+        <span>Board/http_server.c — HTTP + SSE</span>
+        <span>Board/telnet_server.c — Telnet CLI</span>
+        <span>Board/usb_init.c — USB OTG</span>
+        <span>Board/usb_net.c — CDC/RNDIS</span>
+        <span>Board/ntp_sync.c — time sync</span>
+      </div>
+    </div>
+
+    <div class="box brd">
+      <div class="box-title">Peripherals</div>
+      <div class="box-file">
+        <span>Board/accel.c — LIS3DSH SPI</span>
+        <span>Board/dac_sine.c — sine wave PA4</span>
+        <span>Board/clocks.c — 168 MHz setup</span>
+        <span>Board/button.c — user button</span>
+        <span>Board/gpio_dump.c — pin inspector</span>
+        <span>Board/dma_info.c — DMA inspector</span>
+        <span>Board/discovery_cli.c — CLI init</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- COL 4: Limbs (muscle wire) -->
+  <div>
+    <div class="col-label">Limbs — Muscle Wire</div>
+
+    <div class="box limb">
+      <div class="box-title">muscle_wire.h — Configuration</div>
+      <div class="box-file">
+        <span>PWM: TIM3 CH2 · PB5 · 1 kHz</span>
+        <span>MW_PWM_MAX_PCT = 70%</span>
+        <span>R_SENSE = 1 Ω · SCALE_CH0 = 6.0</span>
+        <span>IIR: α=0.20 (τ≈450 ms)</span>
+        <span>ADC: 10 µs settle · 4 burst pairs</span>
+        <span class="note">— Calibration —</span>
+        <span>CAL_WINDOW=8 · BAND=0.10 Ω</span>
+        <span>CAL_R_ALPHA=0.15 · timeout=25 s</span>
+        <span class="note">— Fuzzy Controller —</span>
+        <span>CL_PERIOD=300 ms</span>
+        <span>DEAD=12% · SMALL=20% · LARGE=35%</span>
+        <span>HIGH=35% · MED=25% · LOW=20%</span>
+        <span>HOLD=18% · SOFT_COOL=10%</span>
+        <span>MIN_HOLD_TARGET=20%</span>
+        <span>RATE_THRESH=10%/tick</span>
+        <span class="note">— Characterisation Profiler —</span>
+        <span>SAMPLE=200 ms · PRECOOL=15 s</span>
+        <span>HEAT/COOL=30 s · BUF=512 samples</span>
+        <span>STABLE=5% over 10 samples</span>
+      </div>
+    </div>
+
+    <div class="box limb">
+      <div class="box-title">muscle_wire.c — Subsystems</div>
+      <div class="box-file">
+        <span class="focus">MW_Init()</span>
+        <span class="note">TIM3 PWM · CC4 ADC trigger · ADC dual</span>
+        <span class="note">registers 4 namedActions</span>
+        <span class="focus">MW_SampleR() — 100 ms tea action</span>
+        <span class="note">force-on pulse at 0% duty</span>
+        <span class="note">IIR filter → adc_latch</span>
+        <span class="focus">MW_TIM3_IRQHandler()</span>
+        <span class="note">CC4 fires 10 µs into ON phase</span>
+        <span class="note">ADC_SimBurstRead 4 pairs → adc_raw_latch</span>
+        <span class="focus">MW_CalTick() — 200 ms tea action</span>
+        <span class="note">state: SETTLE→RMAX→HEAT→RMIN→DONE</span>
+        <span class="note">quality check: dR/R &lt; 5% warns</span>
+        <span class="focus">MW_CLTick() — 300 ms tea action</span>
+        <span class="note">fuzzy interpolated controller</span>
+        <span class="note">fz_lerp() heating + cooling ramps</span>
+        <span class="note">rate anticipation · hold target scaling</span>
+        <span class="focus">MW_CharTick() — 200 ms tea action</span>
+        <span class="note">3-phase: precool → heat → cool</span>
+        <span class="note">stability: 5% spread / 10 samples</span>
+        <span class="focus">MW_HttpFeed() — 200 ms tea action</span>
+        <span class="note">SSE frame → /mw_stream (5 Hz)</span>
+        <span class="focus">MW_ProfileTick() — SysTick 1 ms</span>
+        <span class="note">fixed-duty 512-sample capture</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<hr class="divider">
+
+<!-- CLI Word Reference -->
+<div class="section-title">CLI Commands — Muscle Wire (discoverywords.txt)</div>
+<div class="word-grid">
+
+  <div class="word-group">
+    <div class="word-group-title">PWM Control</div>
+    <div class="word-entry">
+      <span><span class="word-name">setpwm</span> <span class="word-fn">MW_CLI_SetPWM</span></span>
+      <span><span class="word-fn">( n ) set duty 0–70%. disables CL</span></span>
+      <span><span class="word-name">show-pwm</span> <span class="word-fn">MW_CLI_ShowPWM</span></span>
+      <span><span class="word-fn">duty · V · R · contraction%</span></span>
+    </div>
+  </div>
+
+  <div class="word-group">
+    <div class="word-group-title">Calibration</div>
+    <div class="word-entry">
+      <span><span class="word-name">cal-wire</span> <span class="word-fn">MW_CLI_Calibrate</span></span>
+      <span><span class="word-fn">R_max@0% → R_min@70% (~20–30 s)</span></span>
+      <span><span class="word-name">show-cal</span> <span class="word-fn">MW_CLI_ShowCal</span></span>
+      <span><span class="word-fn">R_max · R_min · span · dR/R · quality</span></span>
+    </div>
+  </div>
+
+  <div class="word-group">
+    <div class="word-group-title">Closed-Loop Controller</div>
+    <div class="word-entry">
+      <span><span class="word-name">set-per</span> <span class="word-fn">MW_CLI_SetPercent</span></span>
+      <span><span class="word-fn">( n ) hold n% contraction (0–100)</span></span>
+      <span><span class="word-name">show-cl</span> <span class="word-fn">MW_CLI_ShowCL</span></span>
+      <span><span class="word-fn">target · measured · error · rate · PWM</span></span>
+      <span><span class="word-name">cl-off</span> <span class="word-fn">MW_CLI_CLOff</span></span>
+      <span><span class="word-fn">disable controller</span></span>
+    </div>
+  </div>
+
+  <div class="word-group">
+    <div class="word-group-title">Characterisation Profiler</div>
+    <div class="word-entry">
+      <span><span class="word-name">char-wire</span> <span class="word-fn">MW_CLI_CharWire</span></span>
+      <span><span class="word-fn">( n ) precool → heat@n% → cool</span></span>
+      <span><span class="word-name">dump-char</span> <span class="word-fn">MW_CLI_DumpChar</span></span>
+      <span><span class="word-fn">CSV: time · phase · PWM · R · c%</span></span>
+    </div>
+  </div>
+
+  <div class="word-group">
+    <div class="word-group-title">Fixed-Duty Profiler</div>
+    <div class="word-entry">
+      <span><span class="word-name">start-profile</span> <span class="word-fn">MW_CLI_StartProfile</span></span>
+      <span><span class="word-fn">( n ) 512 samples @ 50 ms, duty=n%</span></span>
+      <span><span class="word-name">dump-profile</span> <span class="word-fn">MW_DumpProfile</span></span>
+      <span><span class="word-fn">CSV: time · raw · V · R · c%</span></span>
+    </div>
+  </div>
+
+  <div class="word-group">
+    <div class="word-group-title">Wire Measurements</div>
+    <div class="word-entry">
+      <span class="word-fn">R_wire = R_SENSE × (Vsup − Vsense) / Vsense</span>
+      <span class="word-fn">c% = (R_max − R) / span × 100</span>
+      <span class="word-fn">Wire: cold ~8.9 Ω · contracted ~7.6 Ω</span>
+      <span class="word-fn">span ~1.2 Ω · dR/R ~13.6%</span>
+    </div>
+  </div>
+
+</div>
+
+<hr class="divider">
+
+<!-- Signal path -->
+<div class="signal">
+  <div class="signal-title">ADC Measurement Signal Path</div>
+
+  <div class="signal-row">
+    <div class="sig-node hi">5V rail</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node hi">R_wire (~8.9 Ω)</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node hi">MOSFET drain</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node hi">MOSFET source</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node hi">R_SENSE (1 Ω)</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node hi">GND</div>
+  </div>
+
+  <div class="signal-row" style="margin-top:4px;">
+    <div class="sig-node lo">V_supply tap</div>
+    <div class="sig-label">100k/20k divider ÷6</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node lo">PA3 ADC1-IN3</div>
+    <div class="sig-arr" style="padding:0 12px;">|</div>
+    <div class="sig-node lo">V_sense tap</div>
+    <div class="sig-label">direct ×1</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node lo">PB0 ADC2-IN8</div>
+  </div>
+
+  <div class="signal-row" style="margin-top:4px;">
+    <div class="sig-node os">TIM3 CNT=0 (PWM rise)</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node os">CC4 fires @10 µs</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node os">ISR: 4× dual burst</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node os">adc_raw_latch</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node os">MW_SampleR @100 ms</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node os">IIR α=0.20</div>
+    <div class="sig-arr">→</div>
+    <div class="sig-node os">adc_latch</div>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- Build flow -->
+<div class="section-title">Build Flow</div>
+<div class="flow">
+  <div class="flow-step">discoverywords.txt</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">parsewords.py (pre-build)</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">wordlist.c · help.c (generated)</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">STM32CubeIDE / cmake</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">Discovery.elf</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">ST-Link flash</div>
+</div>
+
+<div class="flow">
+  <div class="flow-step">web/ HTML+JS</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">web/build_fsdata.py</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">Board/http_content.h (fsdata)</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step">served by httpd at /mw_stream</div>
+</div>
+
+<p style="margin-top:20px; font-size:9px; color:#374151;">Generated by Claude · Discovery project · April 2026</p>
+
+</body>
+</html>
