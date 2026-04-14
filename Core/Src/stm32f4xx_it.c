@@ -222,6 +222,8 @@ void TIM2_IRQHandler(void)
 void TIM3_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM3_IRQn 0 */
+    // TIM3 NVIC not enabled at 100 kHz (CC4 path removed; cap-hold ADC used).
+    // MW_TIM3_IRQHandler is a no-op stub — call kept for link compatibility.
     void MW_TIM3_IRQHandler();
     MW_TIM3_IRQHandler();
   /* USER CODE END TIM3_IRQn 0 */
@@ -293,12 +295,8 @@ void OTG_FS_IRQHandler(void)
 void USART6_IRQHandler(void)
 {
   /* USER CODE BEGIN USART6_IRQn 0 */
-  if (LL_USART_IsActiveFlag_RXNE(USART6) && LL_USART_IsEnabledIT_RXNE(USART6))
-    usart6_rx_irq();
-  if (LL_USART_IsActiveFlag_TXE(USART6)  && LL_USART_IsEnabledIT_TXE(USART6))
-    usart6_tx_irq();
-  if (LL_USART_IsActiveFlag_TC(USART6)   && LL_USART_IsEnabledIT_TC(USART6))
-    usart6_tc_irq();
+  void usart6_irq();
+  usart6_irq();
   /* USER CODE END USART6_IRQn 0 */
   /* USER CODE BEGIN USART6_IRQn 1 */
 

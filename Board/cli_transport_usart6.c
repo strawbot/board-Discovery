@@ -109,3 +109,15 @@ void usart6_transport_init(void) {
     when(EmitEvent, usart6_emit);
     autoEchoOff();
 }
+
+// irq handler
+void usart6_irq() {
+    Long status = USART6->SR;
+    if ((status & USART_SR_RXNE) && LL_USART_IsEnabledIT_RXNE(USART6))
+        usart6_rx_irq();
+    if ((status & USART_SR_TXE) && LL_USART_IsEnabledIT_TXE(USART6))
+        usart6_tx_irq();
+    if ((status & USART_SR_TC)  && LL_USART_IsEnabledIT_TC(USART6))
+        usart6_tc_irq();
+}
+
