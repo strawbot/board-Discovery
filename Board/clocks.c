@@ -35,7 +35,8 @@ void show_timer() {
 	// 2. Convert time_t to a UTC struct tm
     // gmtime returns a pointer to a static struct, so it is not thread-safe.
     // Use gmtime_r (POSIX) for thread-safe applications.
-    utc_tm = gmtime(&now);
+	struct tm tm_buf;                       /* caller-owned: no malloc       */
+    utc_tm = gmtime_r(&now, &tm_buf);
     if (utc_tm == NULL) {
         print("\n gmtime failed ");
         return;
