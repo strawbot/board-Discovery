@@ -10,7 +10,7 @@
 // bigger buffer for accepting long hexscii sequences
 #define CLI_PARAMETERS
 
-#define CLI_TITLE "ActiveRobot"
+#define CLI_TITLE "ActiveRobot Discovery"
 
 #define DCELLS 20  // number of data stack cells
 #define RCELLS 20  // number of return stack cells
@@ -75,7 +75,7 @@ uint32_t ntp_get_utc(void);
 #define FIRST_EVENT (const char *)secs(5)
 
 // define space for action stats
-#define TEA_TABLE HASH10
+#define TEA_TABLE HASH8
 
 // black hole reasons - addendum
 #define DMA_OVERBOOKED 7
