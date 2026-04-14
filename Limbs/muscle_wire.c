@@ -1,9 +1,10 @@
 // muscle_wire.c — Nitinol muscle wire PWM driver + resistance monitor
 //
-// PWM  : TIM3 CH2, PB5 (AF2), 1 kHz, 0.1 % duty resolution
-// ADC  : dual simultaneous ADC1+ADC2 single-shot, triggered in the ON phase
-//        IN3 (PA3) = supply sense divider
-//        IN8 (PB0) = inline sense resistor (FET source → 1 Ω → GND)
+// PWM  : TIM3 CH2, PB5 (AF2), 100 kHz (PSC=0, ARR=839), 0.12 % duty resolution
+// ADC  : dual simultaneous ADC1+ADC2, free-sampled via 100 nF cap on R_SENSE
+//        IN3 (PA3) = supply sense divider  (live — always valid)
+//        IN8 (PB0) = cap-held V_ON across sense resistor (valid any time PWM > 0)
+//        Cap τ_charge ≈ 90 ns; τ_hold ≈ 100 ms — CC4 sync no longer needed.
 // Print: printers.h API (print / printFloat / printDec / printCr / tabTo)
 // CLI  : void/void functions; ret() fetches the data-stack argument
 
@@ -38,24 +39,23 @@ static uint32_t            profile_start = 0;   // HAL_GetTick() at start
 static uint8_t             profile_duty  = 0;
 static MW_ProfileState_t   profile_state = MW_PROFILE_IDLE;
 
-// ── ADC sample latches ────────────────────────────────────────────────────────
+// ── ADC sample latch ──────────────────────────────────────────────────────────
 //
-// adc_raw_latch — written by the CC4 ISR (trivially small: two LDRH + STRH).
-//   Holds raw 12-bit counts captured MW_ADC_SETTLE_TICKS µs into the ON phase.
-//   ISR only writes; MW_SampleR (main loop) reads.
+// adc_raw_latch removed: at 100 kHz the CC4 ISR path is no longer used.
+//   MW_SampleR now calls ADC_SimBurstRead directly; the 100 nF cap on R_SENSE
+//   holds V_ON between PWM pulses so any sample time is valid.
 //
-// adc_latch — written by MW_SampleR in main-loop context after converting the
-//   raw counts to millivolts using the cached VDDA.  All other code reads this.
+// adc_latch — written by MW_SampleR in main-loop context.  All other code reads this.
 //   Always fresh within one MW_SampleR period (100 ms).
+//   raw_ch0/raw_ch1 hold the most recent pre-filter ADC burst averages (12-bit counts).
+//   Previously stored in the now-removed adc_raw_latch ISR struct; consolidated here
+//   so the profile code has a single source for both raw and converted values.
 static volatile struct {
-    uint16_t raw0;      // IN3 — supply sense
-    uint16_t raw1;      // IN8 — inline sense resistor
-} adc_raw_latch = { 0u, 0u };
-
-static volatile struct {
+    uint16_t raw_ch0;   // IN3 — supply sense (raw 12-bit count, burst-averaged)
+    uint16_t raw_ch1;   // IN8 — sense resistor (raw 12-bit count, burst-averaged)
     float vsup_mv;
     float vsense_mv;
-} adc_latch = { 0.0f, 0.0f };
+} adc_latch = { 0u, 0u, 0.0f, 0.0f };
 
 // IIR filter state — initialised to 0; MW_SampleR seeds from first reading.
 static float iir_vsup_mv   = 0.0f;
@@ -108,8 +108,8 @@ void MW_Init(void)
 
     // ── TIM3 ─────────────────────────────────────────────────────────────────
     // APB1 timer clock = 84 MHz
-    // PSC = 83 → tick = 1 µs
-    // ARR = 999 → period = 1 ms (1 kHz)
+    // PSC = 0 → tick ≈ 11.9 ns (84 MHz)
+    // ARR = 839 → period = 840 ticks = 10 µs (100 kHz)
     LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM3);
 
     LL_TIM_SetPrescaler  (TIM3, MW_PWM_PSC);
@@ -123,24 +123,12 @@ void MW_Init(void)
     LL_TIM_OC_EnablePreload(TIM3, LL_TIM_CHANNEL_CH2);
     LL_TIM_CC_EnableChannel(TIM3, LL_TIM_CHANNEL_CH2);
 
-    // ── CC4 one-shot compare — ADC sample trigger ─────────────────────────────
-    // CH4 output pin is NOT enabled; only the CC4 interrupt is used.
-    // FROZEN mode: compare match does not affect any output — interrupt only.
-    // CCR4 is written dynamically by the CC2 ISR on each ON→OFF edge.
-    LL_TIM_OC_SetMode      (TIM3, LL_TIM_CHANNEL_CH4, LL_TIM_OCMODE_FROZEN);
-    LL_TIM_OC_SetCompareCH4(TIM3, 0u);
-    // CH4 output NOT enabled — LL_TIM_CC_EnableChannel intentionally omitted
+    // CC4 not used at 100 kHz — 100 nF cap on R_SENSE holds V_ON between pulses.
+    // TIM3 NVIC not enabled; MW_TIM3_IRQHandler is a no-op stub.
 
     // Load preloaded values, then start
     LL_TIM_GenerateEvent_UPDATE(TIM3);
     LL_TIM_EnableCounter(TIM3);
-
-    // ── TIM3 IRQ — CC4 only (CC2 not used) ───────────────────────────────────
-    // CC4 is armed by MW_SampleR (100 ms tea action) before each wanted sample.
-    // The ISR is two uint16 reads + disable — no blocking, no ADC1 activity.
-    LL_TIM_ClearFlag_CC4(TIM3);
-    NVIC_SetPriority(TIM3_IRQn, 8u);
-    NVIC_EnableIRQ(TIM3_IRQn);
 
     // ── Dual simultaneous ADC ─────────────────────────────────────────────
     // Retire the ADC2 continuous DMA scan; configure ADC1+ADC2 for dual
@@ -190,8 +178,8 @@ void MW_SetPWM(uint8_t percent)
     if (percent > MW_PWM_MAX_PCT)
         percent = MW_PWM_MAX_PCT;
     pwm_pct = percent;
-    // ARR = 999 → 1 % = 10 counts → 0.1 % resolution across 0–999
-    LL_TIM_OC_SetCompareCH2(TIM3, (uint32_t)percent * 10u);
+    // ARR = 839 → (ARR+1)/100 = 8.4 counts per % → CCR = pct × 840 / 100
+    LL_TIM_OC_SetCompareCH2(TIM3, (uint32_t)percent * (MW_PWM_ARR + 1u) / 100u);
 }
 
 uint8_t MW_GetPWM(void)
@@ -213,10 +201,11 @@ bool MW_IsOnPhase(void)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TIM3 IRQ — CC4 one-shot fires MW_ADC_SETTLE_TICKS µs into the ON phase
+// TIM3 IRQ — no-op stub retained for link compatibility with stm32f4xx_it.c
 //
-// MW_SampleR (100 ms tea action) arms CC4 at CCR4 = min(MW_ADC_SETTLE_TICKS,
-// CCR2/2) so the ISR fires during the settled ON window regardless of duty.
+// At 100 kHz the CC4 one-shot path is not used: the 100 nF cap on R_SENSE
+// holds V_ON between pulses so MW_SampleR calls ADC_SimBurstRead directly.
+// The TIM3 NVIC is not enabled, so this handler is never actually entered.
 // When CC4 fires the ISR triggers a dual regular simultaneous single-shot on
 // ADC1+ADC2: vsup (IN3/PA3) and vsense (IN8/PB0) captured at the same cycle.
 //
@@ -231,19 +220,8 @@ bool MW_IsOnPhase(void)
 
 void MW_TIM3_IRQHandler(void)
 {
-    if (LL_TIM_IsActiveFlag_CC4(TIM3))
-    {
-        LL_TIM_ClearFlag_CC4(TIM3);
-        LL_TIM_DisableIT_CC4(TIM3);     // one-shot: MW_SampleR re-arms next time
-
-        // FET has been ON for MW_ADC_SETTLE_TICKS µs — sample now.
-        // ADC_SimBurstRead takes MW_ADC_SAMPLES simultaneous IN3+IN8 pairs
-        // back-to-back (28-cycle sample time, 21 MHz clock):
-        //   1 pair  ≈ 1.93 µs   MW_ADC_SAMPLES = 4 → ~7.7 µs total
-        // Averaged result written directly into adc_raw_latch.
-        // Scope strobe pulses HIGH for the entire burst window.
-        ADC_SimBurstRead(&adc_raw_latch.raw0, &adc_raw_latch.raw1, MW_ADC_SAMPLES);
-    }
+    // No-op — TIM3 NVIC not enabled at 100 kHz.
+    // Retained so stm32f4xx_it.c compiles without modification.
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -251,79 +229,64 @@ void MW_TIM3_IRQHandler(void)
 // ═════════════════════════════════════════════════════════════════════════════
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MW_SampleR — 100 ms tea action: take ON-phase sample → update adc_latch
+// MW_SampleR — 100 ms tea action: sample V_sense via cap hold → update adc_latch
+//
+// At 100 kHz the 100 nF cap across R_SENSE holds V_ON between pulses
+// (τ_hold ≈ 100 ms >> 10 µs PWM period).  ADC_SimBurstRead can be called at
+// any time without synchronisation to the PWM phase.
 //
 // When PWM > 0:
-//   1. Convert adc_raw_latch (filled by CC4 ISR MW_ADC_SETTLE_TICKS µs into
-//      the ON phase) to millivolts using the cached VDDA.
-//   2. Arm CC4 for the settled point inside the next ON phase.
-//      CCR4 = min(MW_ADC_SETTLE_TICKS, CCR2/2) ensures CC4 always fires while
-//      the FET is still conducting, even at low duty cycles.
+//   Call ADC_SimBurstRead directly.  The cap presents ≈ V_ON on IN8.
 //
 // When PWM = 0:
-//   FET is off — no current path, so the sense node reads ~0 V.
-//   A brief direct-drive pulse forces the FET ON for ~150 µs so that a valid
-//   current-based resistance reading can be taken:
-//     1. Set CCR2 = MW_ADC_SETTLE_TICKS + 50; apply via GenerateEvent_UPDATE.
-//        Timer resets to 0; output goes HIGH (FET turns on).
-//     2. Spin on TIM3 counter until CNT ≥ MW_ADC_SETTLE_TICKS (100 µs).
-//     3. Trigger and read both ADC channels.
-//     4. Restore CCR2 = 0; apply via GenerateEvent_UPDATE. FET turns off.
-//   pwm_pct stays 0 — only the timer hardware is briefly manipulated.
+//   Cap has discharged (τ_hold ≈ 100 ms; after several seconds it reaches 0 V).
+//   Force 99.9 % duty (CCR2 = MW_PWM_ARR) via GenerateEvent_UPDATE so the FET
+//   turns on.  Spin MW_ADC_SETTLE_TICKS timer counts (≈ 450 ns = 5×τ_charge)
+//   until the cap is fully charged, then burst-sample.  Restore CCR2 = 0.
+//   pwm_pct stays 0 — only the timer CCR2 is temporarily changed.
 //
-// adc_latch is updated every 100 ms regardless of PWM state, so all
-// consumers (adc_snap, CalTick, HttpFeed) always see a recent ON-phase reading.
+// adc_latch is updated every 100 ms regardless of PWM state.
 // ═════════════════════════════════════════════════════════════════════════════
 
 void MW_SampleR(void)
 {
     const float vdda = ADC_GetVDDA_mv();    // last calibrated VDDA (mV)
     float new_vsup, new_vsense;
+    uint16_t raw0, raw1;
 
     if (pwm_pct == 0u)
     {
-        // ── Brief force-on pulse for 0 % duty ───────────────────────────────
-        // Set a short ON pulse (CCR2 = SETTLE + 50 µs) and apply immediately
-        // via GenerateEvent_UPDATE (which resets the counter to 0 and transfers
-        // the preloaded CCR2 shadow → active).  The output goes HIGH at once
-        // since CNT(0) < CCR2_active.
-        const uint32_t pulse_ccr = (uint32_t)(MW_ADC_SETTLE_TICKS + 50u);
-        LL_TIM_OC_SetCompareCH2(TIM3, pulse_ccr);
-        LL_TIM_GenerateEvent_UPDATE(TIM3);   // applies CCR2, resets CNT → 0
+        // ── Brief force-on for 0 % duty: charge cap, then sample ────────────
+        // Set 99.9 % duty (CCR2 = ARR → HIGH for 839/840 of every cycle).
+        // GenerateEvent_UPDATE pushes the shadow CCR2 active and resets CNT.
+        LL_TIM_OC_SetCompareCH2(TIM3, MW_PWM_ARR);
+        LL_TIM_GenerateEvent_UPDATE(TIM3);   // CCR2 active, CNT → 0
 
-        // Spin on the hardware counter — no NOPs, no HAL delay.
+        // Spin until cap charged: MW_ADC_SETTLE_TICKS ticks ≈ 450 ns (5×τ).
+        // Counter runs 0→839 (10 µs) so SETTLE_TICKS=38 is well within range.
         while (LL_TIM_GetCounter(TIM3) < MW_ADC_SETTLE_TICKS) {}
 
-        // Sample both channels simultaneously (FET settled for SETTLE_TICKS µs).
-        // MW_ADC_SAMPLES burst pairs averaged — same noise reduction as ISR path.
-        uint16_t raw0, raw1;
+        // Burst-sample (≈ 7.7 µs).  FET stays ON during the entire burst
+        // because CCR2 = ARR keeps duty at 99.9 % through each wrap.
         ADC_SimBurstRead(&raw0, &raw1, MW_ADC_SAMPLES);
 
-        // Immediately restore 0 % — turn FET off.
+        // Restore 0 % — FET off.
         LL_TIM_OC_SetCompareCH2(TIM3, 0u);
-        LL_TIM_GenerateEvent_UPDATE(TIM3);   // applies CCR2=0, resets CNT → 0
-
-        new_vsup   = (float)raw0 * vdda / 4095.0f * MW_SCALE_CH0;
-        new_vsense = (float)raw1 * vdda / 4095.0f * MW_SCALE_CH1;
+        LL_TIM_GenerateEvent_UPDATE(TIM3);   // CCR2=0 active, CNT → 0
     }
     else
     {
-        // ── Convert raw values latched by the CC4 ISR ───────────────────────
-        new_vsup   = (float)adc_raw_latch.raw0 * vdda / 4095.0f * MW_SCALE_CH0;
-        new_vsense = (float)adc_raw_latch.raw1 * vdda / 4095.0f * MW_SCALE_CH1;
-
-        // ── Re-arm CC4 for the settled point in the next ON phase ───────────
-        // CCR4 fires MW_ADC_SETTLE_TICKS µs after the rising edge (timer wrap).
-        // Cap at half the ON-phase duration so low duty cycles still sample
-        // while the FET is conducting.
-        uint32_t ccr2 = LL_TIM_OC_GetCompareCH2(TIM3);
-        uint32_t ccr4 = MW_ADC_SETTLE_TICKS;
-        if (ccr4 >= ccr2) ccr4 = ccr2 / 2u;
-        if (ccr4 < 2u)    ccr4 = 2u;        // absolute minimum: 2 µs
-        LL_TIM_OC_SetCompareCH4(TIM3, ccr4);
-        LL_TIM_ClearFlag_CC4(TIM3);
-        LL_TIM_EnableIT_CC4(TIM3);
+        // ── Cap holds V_ON — sample at any time ─────────────────────────────
+        // No timer sync needed.  V_sense on IN8 ≈ V_ON (within 0.01 % droop).
+        ADC_SimBurstRead(&raw0, &raw1, MW_ADC_SAMPLES);
     }
+
+    // Store raw counts — read by profile capture; replaces removed adc_raw_latch.
+    adc_latch.raw_ch0 = raw0;
+    adc_latch.raw_ch1 = raw1;
+
+    new_vsup   = (float)raw0 * vdda / 4095.0f * MW_SCALE_CH0;
+    new_vsense = (float)raw1 * vdda / 4095.0f * MW_SCALE_CH1;
 
     // ── IIR low-pass filter ──────────────────────────────────────────────────
     // Seed the filter on first call (both states are 0.0 at startup).
@@ -344,9 +307,9 @@ void MW_SampleR(void)
     after(msec(100), MW_SampleR);
 }
 
-// adc_snap — return the most recent ON-phase reading from adc_latch.
+// adc_snap — return the most recent V_sense reading from adc_latch.
 // Always valid: updated by MW_SampleR every 100 ms for both PWM states
-// (0 % uses a brief force-on pulse; >0 % uses CC4 in the ON phase).
+// (0 % uses a brief force-on pulse; >0 % reads cap-held V_ON directly).
 static void adc_snap(float *vsup_mv, float *vsense_mv)
 {
     *vsup_mv   = adc_latch.vsup_mv;
@@ -446,8 +409,8 @@ void MW_ProfileTick(void)
     // the live resistance readings.
     MW_Sample_t *s  = &profile[profile_idx];
     s->time_ms      = HAL_GetTick() - profile_start;
-    s->raw_ch0      = adc_raw_latch.raw0;
-    s->raw_ch1      = adc_raw_latch.raw1;
+    s->raw_ch0      = adc_latch.raw_ch0;
+    s->raw_ch1      = adc_latch.raw_ch1;
     s->v_supply_mv  = adc_latch.vsup_mv;
     s->v_sense_mv   = adc_latch.vsense_mv;
 

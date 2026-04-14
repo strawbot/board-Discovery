@@ -13,20 +13,35 @@
 // ────────────────
 //   System = 168 MHz,  APB1 prescaler /4 → APB1 = 42 MHz
 //   TIM3 clock = 2 × APB1 = 84 MHz
-//   PSC = 83  →  tick = 1 µs
-//   ARR = 999 →  period = 1 ms  (1 kHz)
-//   CCR = duty_pct × 10          (0–100 %, 0.1 % resolution)
+//   PSC = 0   →  tick = 1/84 MHz ≈ 11.9 ns
+//   ARR = 839 →  period = 840 ticks = 10 µs  (100 kHz)
+//   CCR = duty_pct × (ARR+1) / 100  =  duty_pct × 840 / 100
 //
-// Sense circuit — ON-phase measurement
-// ─────────────────────────────────────
-//   5V ──[R_wire]──[FET drain]──[FET source]──[MW_R_SENSE = 1 Ω]── GND
-//                                           ^
-//                                     ADC CH1 (PB0)
+// Sense circuit — capacitor hold approach (required at 100 kHz)
+// ─────────────────────────────────────────────────────────────
+//   5V ──[R_wire]──[FET drain]──[FET source]──[MW_R_SENSE = 1 Ω]──[C_hold = 100 nF]── GND
+//                                                                ^
+//                                                          ADC CH1 (PB0)
 //
-//   During ON  phase: FET conducts; current flows through R_wire + FET + R_SENSE.
-//                     V_sense = I × R_SENSE = I × 1 Ω  (current-proportional).
-//                     R is valid — sample here.
-//   During OFF phase: FET off; no current path; ADC CH1 ≈ 0 V.  R not valid.
+//   At 100 kHz the ON phase is only 0.18–3.5 µs at normal PWM settings —
+//   far too short to settle, arm a compare match, and run a burst ADC read.
+//   Instead a 100 nF capacitor across R_SENSE acts as a sample-and-hold:
+//
+//   RC time constants (R_SENSE = 1 Ω, C = 100 nF, R_wire ≈ 9 Ω):
+//     τ_charge  = (R_wire ∥ R_SENSE) × C  ≈ 0.9 Ω × 100 nF = 90 ns
+//     τ_hold    = R_ADC_in × C            ≈ 1 MΩ × 100 nF  = 100 ms
+//
+//   During ON  phase:  FET conducts; cap charges to V_ON in ~5τ = 450 ns.
+//                      At 10 % duty (1 µs ON) the cap reaches > 99.9 % of V_ON.
+//   During OFF phase:  FET off; cap holds V_ON (droop < 0.001 % per 10 µs cycle).
+//
+//   Net result: ADC CH1 reads ≈ V_ON continuously, regardless of PWM phase.
+//   No CC4 compare or ISR synchronisation is required.
+//   The same R_wire formula remains valid (V_sense ≈ V_ON).
+//
+//   For pwm_pct = 0 (no PWM running):
+//     MW_SampleR forces FET ON briefly (99.9 % duty → cap charges in < 500 ns),
+//     runs the ADC burst, then restores 0 % duty.
 //
 //   Assuming FET fully-on (V_ds ≈ 0):
 //     V_sense = I × 1 Ω
@@ -57,9 +72,9 @@
 #include <stdbool.h>
 
 // ── PWM ───────────────────────────────────────────────────────────────────────
-#define MW_PWM_PSC              83u         // 84 MHz → 1 µs tick
-#define MW_PWM_ARR              999u        // 1 ms period → 1 kHz
-// CCR = duty_pct × 10
+#define MW_PWM_PSC              0u          // 84 MHz clock, no prescaler; tick ≈ 11.9 ns
+#define MW_PWM_ARR              839u        // period = 840 ticks = 10 µs → 100 kHz
+// CCR = duty_pct × (MW_PWM_ARR + 1u) / 100u  =  duty_pct × 840 / 100
 
 // Safety ceiling — set-pwm clamps to this value.
 // Lower if the wire runs hot; raise only after thermal characterisation.
@@ -92,27 +107,23 @@
 #define MW_IIR_ALPHA            0.20f
 
 // ── ADC sample timing ─────────────────────────────────────────────────────────
-// At the minimum PWM setting (2 % = 20 µs ON time) the sampling window is
-// 10 µs – 17.5 µs, leaving margin on both sides of the FET transition.
+// At 100 kHz the ON phase is ≤ 3.5 µs at normal PWM settings.
+// The ADC burst (4 pairs × 1.93 µs = 7.72 µs) cannot fit inside a single
+// ON phase, so the CC4 one-shot approach used at 1 kHz is abandoned.
 //
-// CC4 fires MW_ADC_SETTLE_TICKS µs after the rising edge (timer wrap).
-// The CC4 ISR then runs MW_ADC_SAMPLES simultaneous ADC1+ADC2 pairs
-// back-to-back, accumulates the results, and averages before storing.
+// Instead the 100 nF cap across R_SENSE holds V_ON between pulses (τ_hold ≈ 100 ms).
+// MW_SampleR calls ADC_SimBurstRead directly — no timer synchronisation needed.
 //
-// One simultaneous pair at 28-cycle sample time:
-//   (28 + 12.5) / 21 MHz ≈ 1.93 µs
-// Four pairs: 4 × 1.93 µs = 7.72 µs
+// For pwm_pct = 0: MW_SampleR briefly forces 99.9 % duty (CCR2 = MW_PWM_ARR)
+//   via GenerateEvent_UPDATE, waits MW_ADC_SETTLE_TICKS timer counts for the cap
+//   to charge, runs the burst, then restores CCR2 = 0.
 //
-// At 2 % duty (CCR4 = min(SETTLE, CCR2/2) = min(10,10) = 10 µs):
-//   Sample window: 10.0 – 17.7 µs  ✓  within the 20 µs ON phase
+// MW_ADC_SETTLE_TICKS is now in 84 MHz timer ticks (≈ 11.9 ns each):
+//   5 × τ_charge = 5 × 90 ns ≈ 450 ns → 38 ticks
 //
-// For pwm_pct > 0: CC4 armed at CCR4 = min(SETTLE_TICKS, CCR2/2).
-// For pwm_pct = 0: MW_SampleR forces FET ON via a brief direct CCR2 pulse,
-//   spins SETTLE_TICKS µs on the TIM3 counter, runs the burst, then restores
-//   CCR2 = 0.
-//
-// Wire MW_TIM3_IRQHandler() into TIM3_IRQHandler in stm32f4xx_it.c.
-#define MW_ADC_SETTLE_TICKS     10u     // µs into ON phase before first sample
+// MW_TIM3_IRQHandler is retained as a no-op stub so stm32f4xx_it.c compiles
+// without changes.  The NVIC for TIM3 is no longer enabled.
+#define MW_ADC_SETTLE_TICKS     38u     // timer ticks (84 MHz) to charge cap before sample
 #define MW_ADC_SAMPLES          4u      // simultaneous pairs per reading (√4 = 2× noise)
 
 // ── Self-calibration ──────────────────────────────────────────────────────────
