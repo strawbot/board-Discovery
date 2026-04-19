@@ -3,29 +3,24 @@
 // USART6 connects to the RS232 port on the extender board and is the
 // default CLI transport — active from boot, no connection handshake needed.
 //
-// Input routing:
-//   Before each keyIn() call, EmitEvent is pointed at usart6_emit so that
-//   output is automatically directed back to RS232.
-//   autoEchoOff() is used — the RS232 terminal expects the device to echo.
+// TX is interrupt-driven via TXE/TC flags in USART6_IRQHandler.
 //
-// TX is interrupt-driven.  usart6_emit() (the EmitEvent target) enables the
-// TXE interrupt to kick off transmission; usart6_tx_irq() drains emitq one
-// byte per TXE interrupt.  When the queue empties, TXE is disabled and the TC
-// interrupt is armed to detect when the last byte has fully shifted out.
+// RX uses DMA2 Stream1 Ch5 (circular, direct/no-FIFO) into a 256-byte ring
+// buffer.  DMA HT and TC interrupts drain the buffer at the half-way and wrap
+// points; the USART IDLE interrupt catches single bytes and short bursts.
 //
-// RX uses the RXNE interrupt.  The single-instance state machine
-// (IDLE → QUEUED → RUNNING → REQUEUE) prevents queue overflow if bytes
-// arrive faster than the action runs.
+// CubeMX configured: USART6 RX → DMA2 Stream1 Channel5, circular, byte width.
+// If ever reassigned, update USART6_DMA_STREAM and the four flag macros below.
 //
-// Required wiring in stm32f4xx_it.c USART6_IRQHandler:
-//   usart6_rx_irq() — when RXNE flag set and RXNE interrupt enabled
-//   usart6_tx_irq() — when TXE  flag set and TXE  interrupt enabled
-//   usart6_tc_irq() — when TC   flag set and TC   interrupt enabled
+// Required wiring in stm32f4xx_it.c:
+//   DMA2_Stream1_IRQHandler → usart6_dma_irq()
+//   USART6_IRQHandler       → usart6_irq()  (IDLE + TX: TXE + TC flags)
 
 #include <stdint.h>
 #include <stdbool.h>
 
 #include "stm32f4xx_ll_usart.h"
+#include "stm32f4xx_ll_dma.h"
 
 #include "tea.h"
 #include "cli.h"
@@ -34,16 +29,74 @@
 
 #include "cli_transport_usart6.h"
 
-// ── Forward declaration ───────────────────────────────────────────────────────
+// ── DMA stream selection ──────────────────────────────────────────────────────
+// USART6_RX maps to DMA2 Stream1 Ch5 or Stream2 Ch5.  CubeMX picks one;
+// adjust these if your .ioc chose Stream2.
+
+#define USART6_DMA              DMA2
+#define USART6_DMA_STREAM       LL_DMA_STREAM_1
+
+#define USART6_DMA_FLAG_HT_ACTIVE()     LL_DMA_IsActiveFlag_HT1(DMA2)
+#define USART6_DMA_FLAG_TC_ACTIVE()     LL_DMA_IsActiveFlag_TC1(DMA2)
+#define USART6_DMA_FLAG_HT_CLEAR()      LL_DMA_ClearFlag_HT1(DMA2)
+#define USART6_DMA_FLAG_TC_CLEAR()      LL_DMA_ClearFlag_TC1(DMA2)
+
+// ── Forward declarations ──────────────────────────────────────────────────────
 
 static void usart6_rx_action(void);
 
+// ── CLI input queue — filled by DMA drain, consumed by usart6_rx_action ──────
+static BQUEUE(100, cliq);
+
+// ── DMA RX ring buffer ────────────────────────────────────────────────────────
+
+#define USART6_DMA_RX_SIZE  256u
+
+static uint8_t  dma_rx_buf[USART6_DMA_RX_SIZE];
+static uint32_t dma_rx_head = 0;
+
+static inline uint32_t dma_rx_write_pos(void) {
+    return USART6_DMA_RX_SIZE - LL_DMA_GetDataLength(USART6_DMA, USART6_DMA_STREAM);
+}
+
+static void usart6_dma_drain(void) {
+    uint32_t wpos = dma_rx_write_pos();
+    uint32_t head = dma_rx_head;
+
+    if (head == wpos) return;
+
+    bool was_empty = (qbq(cliq) == 0);
+
+    if (wpos > head) {
+        for (uint32_t i = head; i < wpos; i++)
+            pushbq(dma_rx_buf[i], cliq);
+    } else {
+        for (uint32_t i = head; i < USART6_DMA_RX_SIZE; i++)
+            pushbq(dma_rx_buf[i], cliq);
+        for (uint32_t i = 0; i < wpos; i++)
+            pushbq(dma_rx_buf[i], cliq);
+    }
+
+    dma_rx_head = wpos;
+
+    if (was_empty && qbq(cliq))
+        later(usart6_rx_action);
+}
+
+// ── usart6_dma_irq — call from DMA2_Stream1_IRQHandler ───────────────────────
+
+void usart6_dma_irq(void) {
+    if (USART6_DMA_FLAG_HT_ACTIVE()) {
+        USART6_DMA_FLAG_HT_CLEAR();
+        usart6_dma_drain();
+    }
+    if (USART6_DMA_FLAG_TC_ACTIVE()) {
+        USART6_DMA_FLAG_TC_CLEAR();
+        usart6_dma_drain();
+    }
+}
+
 // ── EmitEvent target — kicks off interrupt-driven TX ─────────────────────────
-//
-// Called cooperatively from the action queue.  If the TXE interrupt is already
-// running (transmission in progress) the new bytes in emitq will be drained
-// automatically — no action needed.  Otherwise enable TXE to start the ISR
-// drain loop.
 
 static void usart6_emit(void) {
     if (qbq(emitq))
@@ -51,9 +104,6 @@ static void usart6_emit(void) {
 }
 
 // ── usart6_tx_irq — call from USART6_IRQHandler when TXE flag + IT active ────
-//
-// Sends one byte per interrupt.  When the queue drains: disables TXE and arms
-// TC so we know when the last byte has fully shifted out of the shift register.
 
 void usart6_tx_irq(void) {
     if (qbq(emitq)) {
@@ -65,59 +115,64 @@ void usart6_tx_irq(void) {
 }
 
 // ── usart6_tc_irq — call from USART6_IRQHandler when TC flag + IT active ─────
-//
-// Fires once the shift register drains after the last byte.  Disables TC to
-// avoid spurious interrupts; clears the flag so the next transmission starts
-// cleanly.
 
 void usart6_tc_irq(void) {
     LL_USART_DisableIT_TC(USART6);
     LL_USART_ClearFlag_TC(USART6);
 }
 
-// ── usart6_rx_irq — call from USART6_IRQHandler ───────────────────────────────
-static BQUEUE(100, cliq);
-
-void usart6_rx_irq(void) {
-    pushbq(LL_USART_ReceiveData8(USART6), cliq);
-    if (qbq(cliq) == 1)
-        later(usart6_rx_action);
-}
-
 // ── usart6_rx_action — tea.c action, single-instance ─────────────────────────
 
 static void usart6_rx_action(void) {
-    // rx_state = USART6_RUNNING;
-
-    // Direct output back to RS232 before processing any characters.
     when(EmitEvent, usart6_emit);
-    autoEchoOff();       // RS232 terminal expects device-side echo
+    autoEchoOff();
 
     while (qbq(cliq))  keyIn(pullbq(cliq));
     safe( if(qbq(cliq)) later(usart6_rx_action); )
-    // safely interlock the state machine to prevent orphan bytes
 }
 
 // ── usart6_transport_init — call once from board init ────────────────────────
+//
+// Must be called after MX_DMA_Init() and MX_USART6_UART_Init().
 
 void usart6_transport_init(void) {
-    // Enable USART6 RXNE interrupt — USART6 peripheral itself is already
-    // initialised by MX_USART6_UART_Init() generated by CubeMX.
-    LL_USART_EnableIT_RXNE(USART6);
+    // CubeMX enables FIFO mode — disable for direct (byte-by-byte) transfer.
+    LL_DMA_DisableFifoMode(USART6_DMA, USART6_DMA_STREAM);
 
-    // Establish USART6 as the default CLI transport from boot.
+    LL_DMA_SetPeriphAddress(USART6_DMA, USART6_DMA_STREAM, (uint32_t)&USART6->DR);
+    LL_DMA_SetMemoryAddress(USART6_DMA, USART6_DMA_STREAM, (uint32_t)dma_rx_buf);
+    LL_DMA_SetDataLength   (USART6_DMA, USART6_DMA_STREAM, USART6_DMA_RX_SIZE);
+
+    LL_DMA_EnableIT_HT(USART6_DMA, USART6_DMA_STREAM);
+    LL_DMA_EnableIT_TC(USART6_DMA, USART6_DMA_STREAM);
+
+    LL_DMA_EnableStream(USART6_DMA, USART6_DMA_STREAM);
+    LL_USART_EnableDMAReq_RX(USART6);
+
+    // IDLE interrupt drains single bytes / short bursts before HT fires.
+    LL_USART_ClearFlag_IDLE(USART6);
+    LL_USART_EnableIT_IDLE(USART6);
+
     when(EmitEvent, usart6_emit);
     autoEchoOff();
 }
 
-// irq handler
-void usart6_irq() {
+// ── usart6_irq — call from USART6_IRQHandler ─────────────────────────────────
+//
+// Handles IDLE (→ drain DMA ring buffer) and TX (TXE + TC).
+
+static Long pstatus = 0;
+
+void usart6_irq(void) {
     Long status = USART6->SR;
-    if ((status & USART_SR_RXNE) && LL_USART_IsEnabledIT_RXNE(USART6))
-        usart6_rx_irq();
+    if ((status & USART_SR_IDLE) && LL_USART_IsEnabledIT_IDLE(USART6)) {
+        LL_USART_ClearFlag_IDLE(USART6);   // SR read + DR read clears IDLE
+        (void)USART6->DR;
+        usart6_dma_drain();
+    }
     if ((status & USART_SR_TXE) && LL_USART_IsEnabledIT_TXE(USART6))
         usart6_tx_irq();
     if ((status & USART_SR_TC)  && LL_USART_IsEnabledIT_TC(USART6))
         usart6_tc_irq();
+    pstatus |= status;
 }
-

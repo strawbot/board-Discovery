@@ -58,6 +58,7 @@ void SysTick_Handler(void);
 void TIM2_IRQHandler(void);
 void TIM3_IRQHandler(void);
 void SPI1_IRQHandler(void);
+void DMA2_Stream1_IRQHandler(void);
 void ETH_IRQHandler(void);
 void ETH_WKUP_IRQHandler(void);
 void OTG_FS_IRQHandler(void);
