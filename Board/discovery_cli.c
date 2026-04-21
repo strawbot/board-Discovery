@@ -598,12 +598,12 @@ void show_timers(void)
         print("RTC  : ");
         tabTo(CT_ON); print("ON");
         tabTo(CT_DIR);
-        if (dd < 10) print("0"); printDec(dd); print("-");
-        if (mo < 10) print("0"); printDec(mo);
+        if (dd < 10) {print("0");} printDec0(dd); print("-");
+        if (mo < 10) {print("0");} printDec0(mo);
         tabTo(CT_PSC);
-        if (hh < 10) print("0"); printDec(hh); print(":");
-        if (mn < 10) print("0"); printDec(mn); print(":");
-        if (ss < 10) print("0"); printDec(ss);
+        if (hh < 10) {print("0");} printDec0(hh); print(":");
+        if (mn < 10) {print("0");} printDec0(mn); print(":");
+        if (ss < 10) {print("0");} printDec0(ss);
         printCr();
     }
 }

@@ -142,7 +142,7 @@
 #define SNTP_SERVER_DNS          1
 
 /* Hook invoked by sntp.c each time a valid NTP response is received.
- * ntp_set_utc_seconds() is defined in Board/ntp_sync.c.                       */
+ * ntp_set_utc_seconds() is defined in Robot/net/ntp/ntp_sync.c.               */
 #define SNTP_SET_SYSTEM_TIME(sec) \
     do { extern void ntp_set_utc_seconds(uint32_t); \
          ntp_set_utc_seconds(sec); } while(0)

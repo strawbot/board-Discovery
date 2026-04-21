@@ -136,6 +136,20 @@ static void usart6_rx_action(void) {
 // Must be called after MX_DMA_Init() and MX_USART6_UART_Init().
 
 void usart6_transport_init(void) {
+    // STM32F4 DMA: all SxCR/NDTR/PAR/M0AR registers are write-protected while
+    // EN=1.  A soft/debug reset can leave the stream enabled from the previous
+    // run, so every write below would be silently ignored.  Disable first and
+    // spin until the hardware clears EN (takes ≤ a few AHB cycles).
+    LL_DMA_DisableStream(USART6_DMA, USART6_DMA_STREAM);
+    while (LL_DMA_IsEnabledStream(USART6_DMA, USART6_DMA_STREAM)) {}
+
+    // Clear any stale flags left over from the previous run.
+    USART6_DMA_FLAG_HT_CLEAR();
+    USART6_DMA_FLAG_TC_CLEAR();
+    LL_DMA_ClearFlag_TE1(USART6_DMA);
+    LL_DMA_ClearFlag_DME1(USART6_DMA);
+    LL_DMA_ClearFlag_FE1(USART6_DMA);
+
     // CubeMX enables FIFO mode — disable for direct (byte-by-byte) transfer.
     LL_DMA_DisableFifoMode(USART6_DMA, USART6_DMA_STREAM);
 
@@ -166,8 +180,7 @@ static Long pstatus = 0;
 void usart6_irq(void) {
     Long status = USART6->SR;
     if ((status & USART_SR_IDLE) && LL_USART_IsEnabledIT_IDLE(USART6)) {
-        LL_USART_ClearFlag_IDLE(USART6);   // SR read + DR read clears IDLE
-        (void)USART6->DR;
+        (void)USART6->DR;   // SR already read above (step 1); DR read = step 2 clears IDLE
         usart6_dma_drain();
     }
     if ((status & USART_SR_TXE) && LL_USART_IsEnabledIT_TXE(USART6))

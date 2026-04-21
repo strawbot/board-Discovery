@@ -44,12 +44,17 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    # Robot/ — board-independent shared modules.  See ../Robot/README.md for
+    # the layering rule.  Each board explicitly opts in to the features it
+    # wants by adding the relevant Robot/ source files here.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Robot/net/ntp/ntp_sync.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
+    # Robot/ shared-module headers.  Flat include style matches the rest of
+    # the project (tea.h, printers.h) — code just writes #include "ntp_sync.h".
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Robot/net/ntp
 )
 
 # Add project symbols (macros)

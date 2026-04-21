@@ -21,8 +21,19 @@
 #include "http_server.h"
 #include "telnet_server.h"
 #include "usb_net.h"
-#include "ntp_sync.h"
+#include "ntp_sync.h"           // now lives in Robot/net/ntp/ (added to include path)
 #include "network_init.h"
+
+// ── NTP → HTTP bridge ─────────────────────────────────────────────────────────
+// The Robot NTP module no longer calls http_server directly (see Robot/README.md
+// for the layering rule).  Boards that want status-stream pushes on every sync
+// register a small adapter with ntp_on_sync() during network_init().
+
+static void ntp_push_http_status(uint32_t utc_seconds)
+{
+    (void)utc_seconds;        // http_status_push pulls the value itself
+    http_status_push();
+}
 
 #include "tusb.h"           // tud_ready() — USB host connection state
 
@@ -319,6 +330,12 @@ void network_init(void) {
     // HTTP and Telnet are reachable at 192.168.7.1 once the host assigns
     // itself an address on the 192.168.7.0/24 subnet.
     usb_netif_init();
+
+    // Initialise the Robot NTP module and wire the board-specific listener
+    // that forwards each sync to the HTTP status-stream.  Must come before
+    // ntp_sync_start() so the first sync fan-out reaches the observer.
+    ntp_sync_init();
+    ntp_on_sync(ntp_push_http_status);
 
     // Start SNTP now so USB-only operation can sync if the USB host forwards
     // internet traffic.  ntp_sync_start() is idempotent — the Ethernet
