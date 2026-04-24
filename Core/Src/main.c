@@ -34,6 +34,7 @@
 #include "tea.h"
 #include "accel.h"
 #include "button.h"
+#include "canary.h"
 
 void init_tea();
 void init_cli();
@@ -94,7 +95,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  stack_canary_init();   /* fill stack with 0xDEADBEEF before any deep calls */
   /* USER CODE END Init */
 
   /* Configure the system clock */

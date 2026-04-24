@@ -27,6 +27,10 @@
 #include "telnet_server.h"
 #include "discovery_cli.h"
 
+// Stack overflow detection is provided by Robot/diagnostics/canary.
+// See Robot/README.md for the linker-symbol contract.
+#include "canary.h"
+
 // Diagnostic counters — readable via show_ethernet().
 extern volatile uint8_t eth_rx_ip_ver_byte;   // add to header
 extern volatile uint16_t eth_rx_pbuf_tot_len;
@@ -441,6 +445,11 @@ void show_sys(void) {
     print("PCLK2:   "); printDec(clocks.PCLK2_Frequency  / 1000000); print(" MHz"); printCr();
     print("uptime:  "); printDec(get_ticks());                        print(" ticks"); printCr();
     show_timer();
+    printCr();
+
+    print("stack:   ");
+    stack_render(stack_check());
+    printCr();
 }
 
 // ── Hardware timer survey ─────────────────────────────────────────────────────
