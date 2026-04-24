@@ -109,16 +109,16 @@
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
-						<entry excluding="ethernet.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Board"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
 						<entry excluding="STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c|STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
-						<entry excluding="Target/ethernetif.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="LWIP"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Limbs"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/src/portable/synopsys"/>
 						<entry excluding="Third_Party/LwIP/src/apps/http/fs.c|Third_Party/LwIP/src/netif/bridgeif.c|Third_Party/LwIP/src/netif/bridgeif_fdb.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Robot"/>
 						<entry excluding=".git|.claude|timestamp.c|printersHost.c|TimbreUnitTests" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="TimbreOS"/>
+						<entry excluding="Target/ethernetif.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="LWIP"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Limbs"/>
 						<entry excluding="src/class/cdc/cdc_rndis_host.c|src/class/cdc/cdc_host.c|src/class/video|src/class/vendor|src/class/usbtmc|src/class/mtp|src/class/msc|src/class/midi|src/class/hid|src/class/dfu|src/class/bth|src/class/audio|src/portable|src/typec|lib|hw|test|tools|examples|docs|.PVS-Studio|.idea|.github|.git|.circleci" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/src/portable/synopsys"/>
+						<entry excluding="ethernet.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Board"/>
 						<entry excluding="fsdata.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="web"/>
 					</sourceEntries>
 				</configuration>
@@ -222,16 +222,16 @@
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
-						<entry excluding="ethernet.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Board"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
 						<entry excluding="STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c|STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
-						<entry excluding="Target/ethernetif.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="LWIP"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Limbs"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/src/portable/synopsys"/>
 						<entry excluding="Third_Party/LwIP/src/apps/http/fs.c|Third_Party/LwIP/src/netif/bridgeif.c|Third_Party/LwIP/src/netif/bridgeif_fdb.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Robot"/>
 						<entry excluding=".git|.claude|timestamp.c|printersHost.c|TimbreUnitTests" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="TimbreOS"/>
+						<entry excluding="Target/ethernetif.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="LWIP"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Limbs"/>
 						<entry excluding="src/class/cdc/cdc_rndis_host.c|src/class/cdc/cdc_host.c|src/class/video|src/class/vendor|src/class/usbtmc|src/class/mtp|src/class/msc|src/class/midi|src/class/hid|src/class/dfu|src/class/bth|src/class/audio|src/portable|src/typec|lib|hw|test|tools|examples|docs|.PVS-Studio|.idea|.github|.git|.circleci" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/src/portable/synopsys"/>
+						<entry excluding="ethernet.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Board"/>
 						<entry excluding="fsdata.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="web"/>
 					</sourceEntries>
 				</configuration>
