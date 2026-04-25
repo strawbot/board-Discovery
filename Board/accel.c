@@ -49,7 +49,7 @@
 #include "tea.h"
 #include "cli.h"
 #include "printers.h"
-#include "http_server.h"
+#include "http_streams.h"       // http_accel_push(), http_graph_*()
 #include "accel.h"
 
 // ── SPI CS — managed manually ─────────────────────────────────────────────────

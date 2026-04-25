@@ -22,7 +22,7 @@
 #include "printers.h"           // print / printFloat / printDec / printCr / tabTo
 #include "cli.h"                // ret()
 #include "tea.h"                // after() / msec() / namedAction()
-#include "http_server.h"        // http_mw_live_feed()
+#include "http_streams.h"       // http_mw_live_feed()
 
 // ── Column positions for tabular output ──────────────────────────────────────
 #define COL_LABEL   0

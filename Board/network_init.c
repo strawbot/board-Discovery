@@ -18,7 +18,8 @@
 #include "project_defs.h"
 
 #include "ethernetif.h"
-#include "http_server.h"
+#include "http_server.h"           // now lives in Robot/net/http/ (added to include path)
+#include "http_streams.h"          // Discovery SSE push functions
 #include "telnet_server.h"
 #include "usb_net.h"
 #include "ntp_sync.h"           // now lives in Robot/net/ntp/ (added to include path)
@@ -323,6 +324,7 @@ void network_init(void) {
     // Initialise fixed PCB pools — _start() called from link_callback
     // once an IP address is confirmed.
     http_server_init();
+    http_streams_init();    // register Discovery routes + SSE channels
     telnet_server_init();
     namedAction(lwip_timeout_action);
 

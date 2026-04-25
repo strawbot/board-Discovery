@@ -42,7 +42,8 @@
 #include "tusb.h"
 #include "usb_net.h"
 #include "usb_dhcpd.h"
-#include "http_server.h"
+#include "http_server.h"           // now lives in Robot/net/http/ (added to include path)
+#include "http_streams.h"          // http_status_push()
 #include "telnet_server.h"
 #include "network_init.h"   // network_update_default_route()
 #include "ntp_sync.h"       // ntp_sync_kick()
