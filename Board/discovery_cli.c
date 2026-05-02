@@ -439,11 +439,12 @@ void show_usb(void) {
 void show_sys(void) {
     LL_RCC_ClocksTypeDef clocks;
     LL_RCC_GetSystemClocksFreq(&clocks);
+    print(CLI_TITLE);
     print("SYSCLK:  "); printDec(clocks.SYSCLK_Frequency / 1000000); print(" MHz"); printCr();
     print("HCLK:    "); printDec(clocks.HCLK_Frequency   / 1000000); print(" MHz"); printCr();
     print("PCLK1:   "); printDec(clocks.PCLK1_Frequency  / 1000000); print(" MHz"); printCr();
     print("PCLK2:   "); printDec(clocks.PCLK2_Frequency  / 1000000); print(" MHz"); printCr();
-    print("uptime:  "); printDec(get_ticks());                        print(" ticks"); printCr();
+    print("uptime:  "); printDec(get_ticks()/ONE_SECOND);        print(" seconds"); printCr();
     show_timer();
     printCr();
 
