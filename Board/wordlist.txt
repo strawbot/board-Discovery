@@ -102,8 +102,6 @@ i>f   ( i - f ) convert integer to 32 bit float
 if  [i]  ( n - ) execute following code if top of stack is non-zero
 key   ( - c ) return character c from key queue or 0
 key?   ( - f ) return true if there is a key in the keyq
-l!   (n a - )store next into memory using top as address (processor sized)
-l@   ( a - n )return contents of memory using top stack item as the address (32 bit)
 latency   show latency stats for time events and actions
 ln   ( f - f  ) calculate the natural log of f 
 log   ( f - f  ) calculate the log 10 of f 

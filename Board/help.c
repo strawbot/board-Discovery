@@ -154,8 +154,6 @@ void help(void) {
     printif("if  [i]  ( n - ) execute following code if top of stack is non-zero\n");
     printif("key   ( - c ) return character c from key queue or 0\n");
     printif("key?   ( - f ) return true if there is a key in the keyq\n");
-    printif("l!   (n a - )store next into memory using top as address (processor sized)\n");
-    printif("l@   ( a - n )return contents of memory using top stack item as the address (32 bit)\n");
     printif("latency   show latency stats for time events and actions\n");
     printif("ln   ( f - f  ) calculate the natural log of f\n");
     printif("log   ( f - f  ) calculate the log 10 of f\n");

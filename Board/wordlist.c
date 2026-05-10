@@ -95,8 +95,6 @@ NAMES(wordnames)
 	NAME("c!")		//  ( c a - ) store next into memory using top as address (8 bit)
 	NAME("s@")		//  ( a - h ) return contents of memory using top stack item as the address (16 bit)
 	NAME("s!")		//  ( h a - ) store next into memory using top as address (16 bit)
-	NAME("l@")		//  ( a - n )return contents of memory using top stack item as the address (32 bit)
-	NAME("l!")		//  (n a - )store next into memory using top as address (processor sized)
 	NAME("+b")		//  ( b a - ) turn on b bits at address a: 0b10001 em +b
 	NAME("-b")		//  ( b a - ) turn off b bits at address a: 0b10001 em -b
 	NAME("cmove")		//  ( s d n - ) move n bytes from s to d
@@ -259,8 +257,6 @@ void byteFetch(void);
 void byteStore(void);
 void shortFetch(void);
 void shortStore(void);
-void longFetch(void);
-void longStore(void);
 void plusBits(void);
 void minusBits(void);
 void byteMove(void);
@@ -299,7 +295,7 @@ void resetCli(void);
 void colon(void);
 void constant(void);
 void variable(void);
-void righBracket(void);
+void rightBracket(void);
 void cliFdot(void);
 void cliItof(void);
 void cliFtoi(void);
@@ -423,8 +419,6 @@ BODIES(wordbodies)
 	BODY(byteStore)
 	BODY(shortFetch)
 	BODY(shortStore)
-	BODY(longFetch)
-	BODY(longStore)
 	BODY(plusBits)
 	BODY(minusBits)
 	BODY(byteMove)
@@ -463,7 +457,7 @@ BODIES(wordbodies)
 	BODY(colon)
 	BODY(constant)
 	BODY(variable)
-	BODY(righBracket)
+	BODY(rightBracket)
 	BODY(cliFdot)
 	BODY(cliItof)
 	BODY(cliFtoi)
