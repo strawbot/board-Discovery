@@ -61,9 +61,6 @@
 #define MEM_SIZE 16384
 /*----- Default Value for MEMP_NUM_TCP_PCB_LISTEN: 8 ---*/
 #define MEMP_NUM_TCP_PCB_LISTEN 2
-/*----- Value in opt.h for MEMP_NUM_SYS_TIMEOUT: (LWIP_TCP + IP_REASSEMBLY + LWIP_ARP + (2*LWIP_DHCP) + LWIP_AUTOIP + LWIP_IGMP + LWIP_DNS + (PPP_SUPPORT*6*MEMP_NUM_PPP_PCB) + (LWIP_IPV6 ? (1 + LWIP_IPV6_REASS + LWIP_IPV6_MLD) : 0)) -*/
-/* Increased: two netifs (Ethernet + USB) each register ARP timers; DHCP on Ethernet
-   registers 2; DNS adds 1; SNTP adds 1; extra headroom for TCP connections.  */
 /*----- Default Value for MEMP_NUM_SYS_TIMEOUT: 5 ---*/
 #define MEMP_NUM_SYS_TIMEOUT 14
 /*----- Value in opt.h for LWIP_ETHERNET: LWIP_ARP || PPPOE_SUPPORT -*/
@@ -98,24 +95,6 @@
 #define LWIP_STATS 1
 /*----- Value in opt.h for MIB2_STATS: 0 or SNMP_LWIP_MIB2 -----*/
 #define MIB2_STATS 0
-/*----- Value in opt.h for CHECKSUM_GEN_IP: 1 -----*/
-/* Software checksum generation must be ON.
- *
- * CHECKSUM_BY_HARDWARE offloads checksums to the STM32 Ethernet DMA — but
- * only for frames that pass through that peripheral.  USB NCM frames bypass
- * the Ethernet DMA entirely (they go through TinyUSB).  With generation
- * disabled, LwIP writes 0 into every checksum field, and macOS validates
- * checksums strictly: it silently discards all TCP/UDP/IP packets whose
- * checksum is wrong, which means:
- *   - DHCP OFFERs are discarded → host loops DISCOVER forever, never REQUESTs
- *   - TCP SYN-ACKs are discarded → Wireshark sees them (captured before the
- *     kernel checksum check), but the TCP stack drops them; curl times out
- *
- * Enabling software generation here is safe for the Ethernet path too: LwIP
- * computes the checksum, then the Ethernet DMA computes and overwrites it
- * with the same value — net effect zero.  The USB path has no DMA, so LwIP's
- * software-computed value is what the host actually receives.
- */
 /*----- Value in opt.h for CHECKSUM_CHECK_IP: 1 -----*/
 #define CHECKSUM_CHECK_IP 0
 /*----- Value in opt.h for CHECKSUM_CHECK_UDP: 1 -----*/

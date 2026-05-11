@@ -21,6 +21,7 @@
 #include "adc.h"
 #include "dma.h"
 #include "lwip.h"
+#include "rtc.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -117,6 +118,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_ADC2_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
   init_tea();
   init_cli();
@@ -160,6 +162,14 @@ void SystemClock_Config(void)
   {
 
   }
+  LL_RCC_LSI_Enable();
+
+   /* Wait till LSI is ready */
+  while(LL_RCC_LSI_IsReady() != 1)
+  {
+
+  }
+  LL_PWR_EnableBkUpAccess();
   LL_RCC_PLL_ConfigDomain_SYS(LL_RCC_PLLSOURCE_HSE, LL_RCC_PLLM_DIV_8, 336, LL_RCC_PLLP_DIV_2);
   LL_RCC_PLL_ConfigDomain_48M(LL_RCC_PLLSOURCE_HSE, LL_RCC_PLLM_DIV_8, 336, LL_RCC_PLLQ_DIV_7);
   LL_RCC_PLL_Enable();

@@ -1,19 +1,28 @@
-#include "ttypes.h"
-#include "project_defs.h"
-
 #ifndef CLOCKS_H_
 #define CLOCKS_H_
 
-// ticks per second
-#define TO_US(ticks) ((Octet)(ticks)*1000000/ONE_SECOND)
-#define TO_MS(ticks) ((Octet)(ticks)*1000/ONE_SECOND)
+#include "ttypes.h"
+#include "project_defs.h"
+#include <time.h>
 
-// ticks proportional to milliseconds via ONE_SECOND
-Long get_ticks();
-void show_timer();
-void init_clocks(void);
+// Tick/real-time conversions
+#define TO_US(ticks)  ((Octet)(ticks) * 1000000uLL / ONE_SECOND)
+#define TO_MS(ticks)  ((Octet)(ticks) * 1000uLL    / ONE_SECOND)
+
+// Libc-free UTC date/time math (no mktime, gmtime, sscanf)
+Long timestamp_to_utc(const char *ts);
+void epoch_to_tm(Long utc, struct tm *t);
+Long tm_to_epoch(const struct tm *t);
+
+// Clock API
+Long get_ticks(void);
 void set_delta_alarm(Long t);
-void over_due();
-void micro_sleep();
+void delta_alarm(void);
+void over_due(void);
+void micro_sleep(void);
+void init_clocks(void);
+void show_timer(void);
+void blink_leds(void);
+void print_build_banner(void);
 
-#endif
+#endif /* CLOCKS_H_ */

@@ -6,6 +6,7 @@
 #include "stm32f407xx.h"
 #include "cmsis_gcc.h"
 #include "core_cm4.h"
+#include "main.h"
 
 // bigger buffer for accepting long hexscii sequences
 #define CLI_PARAMETERS
@@ -43,6 +44,20 @@ void output();
 #define TE_SECOND ONE_SECOND    // for Delta timer
 #define get_utc() ntp_get_utc()  // utc in seconds
 uint32_t ntp_get_utc(void);
+
+// ── Clocks hardware wiring (consumed by TimbreOS/clocks.c) ────────────────
+// STM32F407: TIM2 = 32-bit one-shot delta alarm; TIM5 = 32-bit free-running tick.
+#include "stm32f4xx_ll_tim.h"
+#define CLOCK_DELTA_TIM   TIM2
+#define CLOCK_TICK_TIM    TIM5
+#define CLOCK_HW_INIT() do { \
+    LL_TIM_SetOnePulseMode(TIM2, LL_TIM_ONEPULSEMODE_SINGLE); \
+    LL_TIM_EnableIT_UPDATE(TIM2); \
+    LL_TIM_EnableCounter(TIM5); \
+} while (0)
+// Discovery has a 4-LED colour-wheel heartbeat and an NTP-aware show_timer.
+#define CLOCK_HAS_BLINK   // Board/clocks.c provides blink_leds()
+#define CLOCK_HAS_SHOW    // Board/clocks.c provides show_timer()
 
 // Hi res time measurements
 // 168 MHz clock ticks; wraps after 25 seconds; 5.95 ns resolution
