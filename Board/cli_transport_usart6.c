@@ -169,6 +169,7 @@ void usart6_transport_init(void) {
 
     when(EmitEvent, usart6_emit);
     autoEchoOff();
+    namedAction(usart6_rx_action);
 }
 
 // ── usart6_irq — call from USART6_IRQHandler ─────────────────────────────────

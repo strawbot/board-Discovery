@@ -575,6 +575,7 @@ void accel_init(void)
         namedAction(accel_poll);
         namedAction(accel_heartbeat);
         namedAction(graph_send_next);
+        namedAction(accel_batch_process);
     }
 
     CS_HIGH();

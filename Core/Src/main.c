@@ -130,6 +130,10 @@ int main(void)
   later(accel_init);
   later(button_init);
   later(MW_Init);
+  namedAction(network_init);
+  namedAction(accel_init);
+  namedAction(button_init);
+  namedAction(MW_Init);
   /* USER CODE END 2 */
 
   /* Infinite loop */

@@ -361,7 +361,7 @@ err_t ethernetif_init(struct netif *netif) {
 
                       // In ethernetif_init or after netif_add:
 memcpy((void *)dbg_hwaddr, netif->hwaddr, 6);
-
+    namedAction(eth_input_action);   // start lwIP timers after netif is ready
     return ERR_OK;
 }
 
