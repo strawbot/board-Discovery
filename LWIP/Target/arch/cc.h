@@ -82,7 +82,14 @@ typedef int sys_prot_t;
 #define LWIP_PLATFORM_ASSERT(x) do {printf("Assertion \"%s\" failed at line %d in %s\n", \
                                      x, __LINE__, __FILE__); } while(0)
 
-/* Define random number generator function */
-#define LWIP_RAND() ((u32_t)rand())
+/* xorshift32 PRNG — replaces rand() to avoid its lazy malloc(24) on first
+ * call.  static inline: each lwIP TU gets its own state; no external linkage
+ * needed.  Randomness quality is sufficient for XID / port / delay use. */
+static inline uint32_t lwip_rand(void) {
+    static uint32_t s = 0xDEADBEEFu;
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    return s;
+}
+#define LWIP_RAND() lwip_rand()
 
 #endif /* __CC_H__ */
