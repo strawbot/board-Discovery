@@ -440,6 +440,7 @@ void show_sys(void) {
     LL_RCC_ClocksTypeDef clocks;
     LL_RCC_GetSystemClocksFreq(&clocks);
     print(CLI_TITLE);
+    print_build_banner(); printCr();
     print("SYSCLK:  "); printDec(clocks.SYSCLK_Frequency / 1000000); print(" MHz"); printCr();
     print("HCLK:    "); printDec(clocks.HCLK_Frequency   / 1000000); print(" MHz"); printCr();
     print("PCLK1:   "); printDec(clocks.PCLK1_Frequency  / 1000000); print(" MHz"); printCr();
